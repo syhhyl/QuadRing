@@ -9,18 +9,9 @@ import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 
 /**
-  * This is a trivial example of how to run this Specification
-  * From within sbt use:
+  * This is a trivial example of how to run this Specification:
   * {{{
-  * testOnly gcd.GCDSpec
-  * }}}
-  * From a terminal shell use:
-  * {{{
-  * sbt 'testOnly gcd.GCDSpec'
-  * }}}
-  * Testing from mill:
-  * {{{
-  * mill QuadRing.test.testOnly gcd.GCDSpec
+  * ./mill QuadRing.test.testOnly gcd.GCDSpec
   * }}}
   */
 class GCDSpec extends AnyFreeSpec with Matchers with ChiselSim {
