@@ -13,19 +13,7 @@ unmodified Chisel template example (`GCD`, `DecoupledGcd`).
 
 The checked-in `./mill` script bootstraps mill, so no separate installation is needed.
 
-## Build and test
+## Build, test and generate verilog
+`./test.sh`
 
-```sh
-./mill QuadRing.compile                     # compile
-./mill QuadRing.test                        # run all tests
-./mill QuadRing.test.testOnly gcd.GCDSpec   # run a single test class
-```
-
-## Generate Verilog
-
-```sh
-./mill QuadRing.runMain gcd.GCD
-```
-
-This writes `GCD.sv` and `filelist.f` into the repository root; neither is gitignored,
-so remove them when you are done.
+This writes all `.sv` and filelist.f into the repository root, neither is gitignored, so remove them when you are done.
