@@ -5,6 +5,5 @@
 
 # generate verilog
 ./mill QuadRing.runMain adder.Adder
-./mill QuadRing.runMain gcd.GCD
 ./mill QuadRing.runMain sel.Sel
-
+./mill QuadRing.runMain noc.DiplomacyAdder
