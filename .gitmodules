@@ -1,0 +1,6 @@
+[submodule "third_party/diplomacy"]
+	path = third_party/diplomacy
+	url = https://github.com/chipsalliance/diplomacy
+[submodule "third_party/cde"]
+	path = third_party/cde
+	url = https://github.com/chipsalliance/cde

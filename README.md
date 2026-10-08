@@ -1,9 +1,18 @@
 # QuadRing
 
-Chisel 7 hardware generator (Scala 2.13.18), built with [mill](https://mill-build.org).
+Chisel 7 hardware generator (Scala 2.13.17), built with [mill](https://mill-build.org).
 
-The `QuadRing` design is not implemented yet: `src/main/scala/gcd/` currently holds the
-unmodified Chisel template example (`GCD`, `DecoupledGcd`).
+The `QuadRing` NoC design is not implemented yet: write designs under `src/main/scala/`.
+The [Diplomacy](https://github.com/chipsalliance/diplomacy) framework (and its `cde`
+dependency) are vendored as git submodules under `third_party/` and exposed through the
+`diplomacyLib` mill module, so the main `QuadRing` module can `import
+org.chipsalliance.diplomacy...` directly.
+
+After cloning, initialize the submodules:
+
+```
+git submodule update --init --recursive
+```
 
 ## Requirements
 
