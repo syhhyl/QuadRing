@@ -344,3 +344,5 @@ hs_err_pid*
 
 # metals
 .metals/
+
+PLAN.md
