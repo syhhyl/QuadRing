@@ -1,9 +1,9 @@
-# build and test
+#!/usr/bin/env bash
+# Build, test, and generate Verilog into generated/.
+set -euo pipefail
+
 ./mill QuadRing.compile
 ./mill QuadRing.test
 
-
-# generate verilog
-./mill QuadRing.runMain adder.Adder
-./mill QuadRing.runMain sel.Sel
-./mill QuadRing.runMain noc.DiplomacyAdder
+# Generate Verilog.
+./mill QuadRing.runMain adder.AdderMain

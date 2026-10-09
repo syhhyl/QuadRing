@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## What this repo is
-- Chisel 7.13.0 / Scala 2.13.17 hardware generator built with mill. Despite the `QuadRing` name, there is **no QuadRing/NoC implementation yet**: write designs under `src/main/scala/` (see the `noc` package).
+- Chisel 7.13.0 / Scala 2.13.17 hardware generator built with mill. Despite the `QuadRing` name, there is **no QuadRing/NoC implementation yet**: write designs under `src/main/scala/`.
 - The standalone `chipsalliance/diplomacy` framework, plus its pinned `chipsalliance/cde` dependency, are vendored as git submodules under `third_party/` and compiled by the `diplomacyLib` mill module. There is **no published Maven artifact** for either. After cloning run `git submodule update --init --recursive`.
 - The main `QuadRing` module depends on `diplomacyLib`, so designs import:
   `org.chipsalliance.cde.config.Parameters`, `org.chipsalliance.diplomacy.lazymodule._`, `org.chipsalliance.diplomacy.nodes._` (note: **not** `freechips.rocketchip.diplomacy`, which is the older rocket-chip namespace).
@@ -13,7 +13,7 @@
 - All tests: `./mill QuadRing.test` (CI uses `./mill _.test`).
 - Single test: `./mill QuadRing.test.testOnly adder.AdderSpec`.
 - Compile only: `./mill QuadRing.compile` (this also compiles `diplomacyLib` from the submodules on first run).
-- Run a generator `main`: `./mill QuadRing.runMain noc.DiplomacyAdder`.
+- Run a generator `main`: `./mill QuadRing.runMain adder.AdderMain`.
 
 ## Toolchain quirks
 - `.mill-jvm-opts` sets `-Dchisel.project.root=${PWD}`, required for Chisel to resolve output directories under mill (see comment in `build.mill`). Do not remove it; run mill from the repo root.
