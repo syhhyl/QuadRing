@@ -2,25 +2,74 @@ package adder
 
 import chisel3._
 import _root_.circt.stage.ChiselStage
+import chisel3.experimental.SourceInfo
+import org.chipsalliance.cde.config.Parameters
+import org.chipsalliance.diplomacy.lazymodule._
+import org.chipsalliance.diplomacy.nodes._
 
-/** Parameterized combinational adder: `sum` is the low `width` bits of `a + b`. */
-class Adder(width: Int = 8) extends Module {
-  val io = IO(new Bundle {
-    val a   = Input(UInt(width.W))
-    val b   = Input(UInt(width.W))
-    val sum = Output(UInt(width.W))
-  })
+object AdderNodeImp extends SimpleNodeImp[Int, Int, Int, UInt] {
+  def edge(offered: Int, wanted: Int, p: Parameters, sourceInfo: SourceInfo): Int = {
+    math.min(offered, wanted)
+  }
 
-  // `+` truncates to the wider operand; use `+&` to keep the carry-out.
-  io.sum := io.a + io.b
+  def bundle(width: Int): UInt = {
+    UInt(width.W)
+  }
+
+  def render(width: Int): RenderedEdge = {
+    RenderedEdge(colour = "blue", label = width.toString)
+  }
 }
 
-/** Emits `Adder.sv` and `filelist.f` into `generated/`. */
-object Adder extends App {
-  ChiselStage.emitSystemVerilogFile(
-    new Adder(8),
-    // `--target-dir` is a Chisel-stage option, so it goes in `args`, not `firtoolOpts`.
-    args = Array("--target-dir", "generated"),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info", "-default-layer-specialization=enable")
-  )
+class Adder(implicit p: Parameters) extends LazyModule {
+  def forwardOffered(offered: Seq[Int]): Int = {
+    offered(0)
+  }
+
+  def forwardWanted(wanted: Seq[Int]): Int = {
+    wanted(0)
+  }
+
+  val node = new NexusNode(AdderNodeImp)(forwardOffered, forwardWanted)
+
+  lazy val module = new AdderImp(this)
+}
+
+class AdderImp(outer: Adder) extends LazyModuleImp(outer) {
+  val left   = outer.node.in(0)._1
+  val right  = outer.node.in(1)._1
+  val sum    = left + right
+  val output = outer.node.out(0)._1
+  output := sum
+}
+
+class AdderTop(implicit p: Parameters) extends LazyModule {
+  val adder = LazyModule(new Adder)
+  val inputA = new SourceNode(AdderNodeImp)(Seq(64))
+  val inputB = new SourceNode(AdderNodeImp)(Seq(64))
+  val output = new SinkNode(AdderNodeImp)(Seq(32))
+
+  adder.node := inputA
+  adder.node := inputB
+  output := adder.node
+
+  lazy val module = new AdderTopImp(this)
+}
+
+class AdderTopImp(outer: AdderTop) extends LazyModuleImp(outer) {
+  val io = IO(new Bundle {
+    val a   = Input(UInt(64.W))
+    val b   = Input(UInt(64.W))
+    val sum = Output(UInt(32.W))
+  })
+
+  outer.inputA.out(0)._1 := io.a
+  outer.inputB.out(0)._1 := io.b
+  io.sum := outer.output.in(0)._1
+}
+
+object AdderMain extends App {
+  implicit val p: Parameters = Parameters.empty
+  val top = LazyModule(new AdderTop)
+  ChiselStage.emitSystemVerilogFile(top.module, args = Array("--target-dir", "generated"))
 }
