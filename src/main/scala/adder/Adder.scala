@@ -72,4 +72,11 @@ object AdderMain extends App {
   implicit val p: Parameters = Parameters.empty
   val top = LazyModule(new AdderTop)
   ChiselStage.emitSystemVerilogFile(top.module, args = Array("--target-dir", "generated"))
+
+  // Export the Diplomacy graph; open it in yEd / Gephi. `graphML` walks the
+  // whole LazyModule tree, so read it after elaboration (i.e. after emit).
+  java.nio.file.Files.writeString(
+    java.nio.file.Path.of("generated/AdderTop.graphml"),
+    top.graphML
+  )
 }
