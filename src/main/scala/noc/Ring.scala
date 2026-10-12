@@ -17,5 +17,6 @@ class Ring[T <: Data](params: RingParams, payloadType: T) extends Module {
 
     val nextNodeId = (nodeId + 1) % params.nodeCount
     stops(nextNodeId).io.ringIn <> stops(nodeId).io.ringOut
+    stops(nodeId).io.creditReturned := stops(nextNodeId).io.creditFreed
   }
 }

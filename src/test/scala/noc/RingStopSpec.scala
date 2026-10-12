@@ -16,6 +16,7 @@ class RingStopSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.local.inject.bits.dst.poke(0.U)
     dut.io.local.inject.bits.payload.poke(0.U)
     dut.io.ringOut.ready.poke(false.B)
+    dut.io.creditReturned.poke(false.B)
     dut.io.local.eject.ready.poke(false.B)
   }
 
@@ -200,7 +201,10 @@ class RingStopSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.local.inject.ready.expect(true.B)
       expectFlit(dut.io.ringOut, dst = 0, payload = 75)
       expectFlit(dut.io.local.eject, dst = 1, payload = 71)
+      // This isolated downstream model frees every accepted flit on the same edge.
+      dut.io.creditReturned.poke(true.B)
       dut.clock.step()
+      dut.io.creditReturned.poke(false.B)
       dut.io.local.inject.valid.poke(false.B)
 
       for (_ <- 0 until 5) {
@@ -215,12 +219,14 @@ class RingStopSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.clock.step()
       expectFlit(dut.io.ringOut, dst = 2, payload = 72)
       dut.io.ringIn.ready.expect(true.B)
+      dut.io.creditReturned.poke(true.B)
       dut.clock.step()
       dut.io.ringIn.valid.poke(false.B)
       expectFlit(dut.io.ringOut, dst = 3, payload = 73)
       dut.clock.step()
       expectFlit(dut.io.ringOut, dst = 0, payload = 74)
       dut.clock.step()
+      dut.io.creditReturned.poke(false.B)
       expectEmpty(dut)
     }
   }
@@ -273,6 +279,7 @@ class RingStopSpec extends AnyFreeSpec with Matchers with ChiselSim {
       val tag = UInt(3.W)
       val words = Vec(2, UInt(8.W))
     })) { dut =>
+      dut.io.creditReturned.poke(false.B)
       dut.io.ringIn.bits.dst.poke(0.U)
       dut.io.ringIn.bits.payload.tag.poke(5.U)
       dut.io.ringIn.bits.payload.words(0).poke(165.U)
