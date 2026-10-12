@@ -23,6 +23,12 @@ class RingFlitSpec extends AnyFreeSpec with Matchers {
     }
   }
 
+  "buffer depths that cannot preserve a bubble fail before hardware elaboration" in {
+    for (bufferDepth <- Seq(-1, 0, 1)) {
+      an[IllegalArgumentException] should be thrownBy RingParams(bufferDepth = bufferDepth)
+    }
+  }
+
   "destination width covers power-of-two and non-power-of-two ring sizes" in {
     for ((nodeCount, dstWidth) <- Seq(2 -> 1, 3 -> 2, 4 -> 2, 5 -> 3, 8 -> 3)) {
       elaborate(RingParams(nodeCount), UInt(8.W)) { port =>
