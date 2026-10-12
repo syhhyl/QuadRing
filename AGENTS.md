@@ -15,7 +15,7 @@ Run from the repository root; `./mill` bootstraps Mill:
 - `./mill QuadRing.test`: run all tests; CI uses `./mill _.test`.
 - `./mill QuadRing.test.testOnly <package.DesignSpec>`: run one suite once tests exist.
 - `./mill QuadRing.runMain <package.DesignMain>`: run a generator once implemented.
-- `./test.sh`: compile and test; the script selects the repository root automatically. Optional graph rendering requires Graphviz (`graphml2gv`, `dot`).
+- `./test.sh`: compile, test, and generate RTL under `generated/`; the script selects the repository root automatically.
 
 Mill is the only supported build tool; do not reintroduce sbt.
 
@@ -28,6 +28,8 @@ Use `org.chipsalliance.cde.config.Parameters` and `org.chipsalliance.diplomacy.l
 ## Testing Guidelines
 
 Use ScalaTest `AnyFreeSpec`, `Matchers`, and `chisel3.simulator.scalatest.ChiselSim`. Install Verilator; Chisel resolves pinned firtool automatically. Cover boundaries, routing, backpressure, and loss/duplication with deterministic seeds and bounded waits. No coverage threshold is configured.
+
+For Diplomacy changes, verify APIs and connection semantics against the pinned local source and examples before implementation. Validate each increment with compilation, RTL elaboration, and focused tests of parameter negotiation, port direction, and actual transfers. Exercise changed node parameters and invalid configurations where relevant; compilation alone is not sufficient. Report what was verified and any remaining uncertainty.
 
 ## Commit & Pull Request Guidelines
 
