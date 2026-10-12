@@ -40,4 +40,5 @@ git submodule update --init --recursive
 ```
 
 Compiles sources, runs tests, and emits SystemVerilog to `generated/`.
+Random tests run 5,000 cycles per seed; use `./test.sh --long` for 100,000. CI runs the long mode.
 The RTL generator uses four nodes, three buffer entries per node, and a 32-bit payload.

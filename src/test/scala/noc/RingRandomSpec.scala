@@ -9,7 +9,12 @@ import scala.util.Random
 
 class RingRandomSpec extends AnyFreeSpec with Matchers with ChiselSim {
   private case class Flit(dst: Int, payload: BigInt)
-  private val runCycles = 100000
+  private val longRun = sys.env.get("QUADRING_LONG_TESTS") match {
+    case None | Some("0") => false
+    case Some("1") => true
+    case Some(value) => throw new IllegalArgumentException(s"QUADRING_LONG_TESTS must be 0 or 1, got '$value'")
+  }
+  private val runCycles = if (longRun) 100000 else 5000
   private val cases = Seq(
     (4, 3, 1L),
     (4, 3, 0x5eedL),
@@ -33,10 +38,12 @@ class RingRandomSpec extends AnyFreeSpec with Matchers with ChiselSim {
         var deliveredCount = 0
         var sawInjectionStall = false
         var sawEjectionStall = false
+        var sawFullBlockage = false
 
         def tick(generate: Boolean, draining: Boolean): Unit = {
           val phase = cycle % 4096
           val blockAll = !draining && phase >= 1024 && phase < 1088
+          sawFullBlockage ||= blockAll
           val forceReady = draining || cycle % 16 == 0
           val injectionChance = if (phase < 512) 1.0 else if (phase < 1024) 0.25 else 0.75
           val ready = Array.tabulate(nodeCount) { _ =>
@@ -50,16 +57,16 @@ class RingRandomSpec extends AnyFreeSpec with Matchers with ChiselSim {
               offers(src) = Some(Flit(random.nextInt(nodeCount), payload))
               nextId += 1
             }
-            port.inject.valid.poke(offers(src).nonEmpty.B)
-            port.inject.bits.dst.poke(offers(src).fold(0)(_.dst).U)
-            port.inject.bits.payload.poke(offers(src).fold(BigInt(0))(_.payload).U)
-            port.eject.ready.poke(ready(src).B)
+            port.inject.valid.poke(offers(src).nonEmpty)
+            port.inject.bits.dst.poke(BigInt(offers(src).fold(0)(_.dst)))
+            port.inject.bits.payload.poke(offers(src).fold(BigInt(0))(_.payload))
+            port.eject.ready.poke(ready(src))
           }
 
           var progressed = false
           for ((port, src) <- dut.io.nodes.zipWithIndex) {
             offers(src).foreach { flit =>
-              if (port.inject.ready.peek().litToBoolean) {
+              if (port.inject.ready.peekBoolean()) {
                 assert(!pending.contains(flit.payload), s"cycle $cycle: payload ID reused")
                 pending(flit.payload) = flit.dst
                 routes += ((src, flit.dst))
@@ -73,8 +80,8 @@ class RingRandomSpec extends AnyFreeSpec with Matchers with ChiselSim {
           }
 
           for ((port, dst) <- dut.io.nodes.zipWithIndex) {
-            val current = if (port.eject.valid.peek().litToBoolean) {
-              Some(Flit(port.eject.bits.dst.peek().litValue.toInt, port.eject.bits.payload.peek().litValue))
+            val current = if (port.eject.valid.peekBoolean()) {
+              Some(Flit(port.eject.bits.dst.peekValue().asBigInt.toInt, port.eject.bits.payload.peekValue().asBigInt))
             } else None
 
             stalledEjections(dst).foreach { previous =>
@@ -124,6 +131,7 @@ class RingRandomSpec extends AnyFreeSpec with Matchers with ChiselSim {
         routes.size shouldBe nodeCount * nodeCount
         sawInjectionStall shouldBe true
         sawEjectionStall shouldBe true
+        sawFullBlockage shouldBe true
 
         // Continue observing the empty ring to detect late duplicates.
         for (_ <- 0 until nodeCount * depth * 2) {

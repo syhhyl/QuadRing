@@ -28,4 +28,6 @@ jobs:
           sudo apt-get install -y verilator g++ make
           verilator --version
       - name: Test
+        env:
+          QUADRING_LONG_TESTS: '1'
         run: ./mill _.test
