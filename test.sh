@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Build, test, and generate Verilog into generated/.
+# Compile and test from the repository root.
 set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 ./mill QuadRing.compile
 ./mill QuadRing.test
-
-# Generate Verilog and the Diplomacy graph (generated/AdderTop.graphml).
-./mill QuadRing.runMain adder.AdderMain
-
-# Render the graph to SVG. graphml2gv warns about yEd-only keys; ignore them.
-graphml2gv generated/AdderTop.graphml 2>/dev/null | dot -Tsvg -o generated/AdderTop.svg

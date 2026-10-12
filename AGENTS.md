@@ -1,29 +1,40 @@
-# AGENTS.md
+# Repository Guidelines
 
-## What this repo is
-- Chisel 7.13.0 / Scala 2.13.17 hardware generator built with mill. Despite the `QuadRing` name, there is **no QuadRing/NoC implementation yet**: designs live under `src/main/scala/` (today only the `adder` example).
-- The standalone `chipsalliance/diplomacy` framework, plus its pinned `chipsalliance/cde` dependency, are vendored as git submodules under `third_party/` and compiled by the `diplomacyLib` mill module. There is **no published Maven artifact** for either, so they must be built from source. After cloning run `git submodule update --init --recursive`; treat `third_party/` as read-only pinned externals.
-- The main `QuadRing` module depends on `diplomacyLib`, so designs import:
-  `org.chipsalliance.cde.config.Parameters`, `org.chipsalliance.diplomacy.lazymodule._`, `org.chipsalliance.diplomacy.nodes._` (note: **not** `freechips.rocketchip.diplomacy`, which is the older rocket-chip namespace).
-- `PLAN.md` (gitignored, local-only, written in Chinese) is the intended 2x2 ring NoC / CHI roadmap; it is not tracked, so don't rely on it existing or add it to commits.
-- `README.md` documents the current mill-only workflow.
+## Project Structure & Module Organization
 
-## Build & test
-- mill is the only supported build tool and `./mill` bootstraps its own version (no install needed). sbt was intentionally removed — do not re-add `build.sbt` or `project/`.
-- The mill module is named `QuadRing` (see `build.mill`).
-- All tests: `./mill QuadRing.test` (CI uses `./mill _.test`).
-- Single test: `./mill QuadRing.test.testOnly adder.AdderSpec`.
-- Compile only: `./mill QuadRing.compile` (this also compiles `diplomacyLib` from the submodules on first run).
-- Run a generator `main`: `./mill QuadRing.runMain adder.AdderMain`.
-- Full workflow: `./test.sh` runs compile → test → `runMain adder.AdderMain` → render the Diplomacy graph to SVG. Besides Verilator it needs **Graphviz** (`graphml2gv` and `dot`), which the mill commands alone do not.
+QuadRing uses Chisel 7.13.0 / Scala 2.13.17. Add designs under `src/main/scala/` and matching tests under `src/test/scala/`. No designs or tests currently remain after removing the examples.
 
-## Toolchain quirks
-- `.mill-jvm-opts` sets `-Dchisel.project.root=${PWD}`, required for Chisel to resolve output directories under mill (see comment in `build.mill`). Do not remove it; run mill from the repo root.
-- Simulation tests use `chisel3.simulator.scalatest.ChiselSim` (svsim) and require **Verilator** installed; CI installs it. `firtool` does **not** need to be on `PATH`: chisel resolves its pinned binary from the `org.chipsalliance:llvm-firtool` Maven artifact (cached under `~/.cache/llvm-firtool`), which is why CI never installs it.
-- Simulations write to `build/chiselsim/<SpecName>/<test name>/`, ignored only via the generic `build/` gitignore rule. `test_run_dir/*` in `.gitignore` is a stale template entry.
-- Generator `main`s (`ChiselStage.emitSystemVerilogFile`) write into the gitignored `generated/` directory: `adder.AdderMain` emits `generated/AdderTop.sv`, its submodule `generated/Adder.sv`, `generated/filelist.f`, and `generated/AdderTop.graphml`. Keep passing `--target-dir generated`; without it the `.sv`/`filelist.f` land in the repo root, which are **not** gitignored.
-- Deleting a design is not enough: orphaned `.class` files remain in the gitignored `out/` build dir, and `./mill QuadRing.test` can then fail hard during test discovery with `NoClassDefFoundError: <deleted class>` (mill loads every class on the classpath). Run `./mill clean QuadRing` after removing or renaming sources.
-- `scalacOptions` include Chisel-specific flags (`-language:reflectiveCalls`, `-Ymacro-annotations`, `-Xcheckinit`); do not trim them.
+Local design documents (`PLAN.md` and `docs/protocol.md`) are ignored by Git. Reconcile earlier drafts with the current plan before implementation. `build.mill` defines `QuadRing` and `diplomacyLib`. Treat pinned `third_party/diplomacy` and `third_party/cde` submodules as read-only; both compile from source without published Maven artifacts.
 
-## CI
-- `.github/workflows/test.yml` installs Verilator and runs `./mill _.test` on pushes to `main` and tags, and on all PRs.
+## Build, Test, and Development Commands
+
+Run from the repository root; `./mill` bootstraps Mill:
+
+- `git submodule update --init --recursive`: initialize dependencies.
+- `./mill QuadRing.compile`: compile designs and dependencies.
+- `./mill QuadRing.test`: run all tests; CI uses `./mill _.test`.
+- `./mill QuadRing.test.testOnly <package.DesignSpec>`: run one suite once tests exist.
+- `./mill QuadRing.runMain <package.DesignMain>`: run a generator once implemented.
+- `./test.sh`: compile and test; the script selects the repository root automatically. Optional graph rendering requires Graphviz (`graphml2gv`, `dot`).
+
+Mill is the only supported build tool; do not reintroduce sbt.
+
+## Coding Style & Naming Conventions
+
+Use two-space indentation, lowercase packages, PascalCase classes/objects, and camelCase members. Name generators `<Design>Main` and suites `<Design>Spec`. No formatter/linter is configured.
+
+Use `org.chipsalliance.cde.config.Parameters` and `org.chipsalliance.diplomacy.lazymodule._` / `org.chipsalliance.diplomacy.nodes._`. Preserve compiler flags, including `-language:reflectiveCalls`, `-Ymacro-annotations`, and `-Xcheckinit`.
+
+## Testing Guidelines
+
+Use ScalaTest `AnyFreeSpec`, `Matchers`, and `chisel3.simulator.scalatest.ChiselSim`. Install Verilator; Chisel resolves pinned firtool automatically. Cover boundaries, routing, backpressure, and loss/duplication with deterministic seeds and bounded waits. No coverage threshold is configured.
+
+## Commit & Pull Request Guidelines
+
+Recent commits use imperative subjects, often `docs:`, `chore:`, or `feat(adder):`. Keep commits focused. PRs should explain behavior, link relevant issues/roadmap tasks, and report validation commands/results. Ensure CI passes; exclude generated artifacts.
+
+## Toolchain & Output Rules
+
+Use JDK 21, matching CI. The current scope is functional correctness and transaction completion; defer concurrency extensions, performance optimization, and performance statistics.
+
+Preserve `.mill-jvm-opts` and `-Dchisel.project.root=${PWD}`. Generators must pass `--target-dir generated`; simulations write under `build/chiselsim/`. Both directories and `out/` are ignored. After removing/renaming sources, run `./mill clean QuadRing` to prevent stale classes breaking test discovery.
