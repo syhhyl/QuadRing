@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-QuadRing uses Chisel 7.13.0 / Scala 2.13.17. Add designs under `src/main/scala/` and matching tests under `src/test/scala/`. No designs or tests currently remain after removing the examples.
+QuadRing uses Chisel 7.13.0 / Scala 2.13.17. Add designs under `src/main/scala/` and matching tests under `src/test/scala/`. The `noc` package holds the generic ring network interfaces and their tests.
 
 Local design documents (`PLAN.md` and `docs/protocol.md`) are ignored by Git. Reconcile earlier drafts with the current plan before implementation. `build.mill` defines `QuadRing` and `diplomacyLib`. Treat pinned `third_party/diplomacy` and `third_party/cde` submodules as read-only; both compile from source without published Maven artifacts.
 
@@ -32,6 +32,8 @@ Use ScalaTest `AnyFreeSpec`, `Matchers`, and `chisel3.simulator.scalatest.Chisel
 ## Commit & Pull Request Guidelines
 
 Recent commits use imperative subjects, often `docs:`, `chore:`, or `feat(adder):`. Keep commits focused. PRs should explain behavior, link relevant issues/roadmap tasks, and report validation commands/results. Ensure CI passes; exclude generated artifacts.
+
+Develop one small, independently reviewable increment at a time. Complete the implementation and relevant tests, then explain the entry files, behavior, and validation for user review. Wait for the user's explicit approval before committing or pushing implementation changes.
 
 ## Toolchain & Output Rules
 
