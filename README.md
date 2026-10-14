@@ -47,5 +47,6 @@ git submodule update --init --recursive
 
 Compiles sources, runs tests, and emits SystemVerilog to `generated/`.
 Random tests run 5,000 cycles per seed; use `./test.sh --long` for 100,000. CI runs the long mode.
-Emits a 32-bit single ring and the four-channel CHI transport, both with four nodes
-and three buffer entries per node.
+Emits a 32-bit single ring to `generated/ring/` and the four-channel CHI transport
+to `generated/chi/`, each with its own `filelist.f`. Both use four nodes and three
+buffer entries per node.
