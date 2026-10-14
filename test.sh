@@ -16,3 +16,4 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 ./mill QuadRing.test
 ./mill QuadRing.runMain noc.RingMain --target-dir generated/ring
 ./mill QuadRing.runMain chi.ChiNoCMain --target-dir generated/chi
+./mill QuadRing.runMain chi.ChiSystemMain --target-dir generated/system

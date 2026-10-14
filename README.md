@@ -8,8 +8,9 @@ and receive them through valid/ready interfaces. Credit and bubble flow control
 handle backpressure and reserve space for forwarding.
 
 CHI subset payloads (REQ, RSP, SNP, DAT) connect through Diplomacy. Endpoint node IDs
-map to ring positions; DAT carries a complete 512-bit line. Endpoint transaction
-processing is pending.
+map to ring positions; DAT carries a complete 512-bit line. RN0, HN, RN1, and SN
+endpoint shells form a four-node system with external flit drivers. Endpoint
+transaction processing is pending.
 
 Each channel uses this topology in the four-node configuration:
 
@@ -48,5 +49,5 @@ git submodule update --init --recursive
 Compiles sources, runs tests, and emits SystemVerilog to `generated/`.
 Random tests run 5,000 cycles per seed; use `./test.sh --long` for 100,000. CI runs the long mode.
 Emits a 32-bit single ring to `generated/ring/` and the four-channel CHI transport
-to `generated/chi/`, each with its own `filelist.f`. Both use four nodes and three
-buffer entries per node.
+to `generated/chi/`. The assembled endpoint system is emitted to `generated/system/`.
+Each output has its own `filelist.f`, with four nodes and three buffer entries per node.
