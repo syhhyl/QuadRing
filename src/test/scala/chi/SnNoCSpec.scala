@@ -16,19 +16,6 @@ class SnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
     ChiNoCParams(ChiParams(3, 7, 32), RingParams(4, 5)) -> Seq(6, 1, 4, 0)
   )
 
-  private def initializeDriver(port: ChiPort): Unit = {
-    Seq(port.reqTx, port.rspTx, port.snpTx, port.datTx).foreach(_.valid.poke(false))
-    Seq(port.reqRx, port.rspRx, port.snpRx, port.datRx).foreach(_.ready.poke(false))
-    for (bits <- Seq(port.reqTx.bits, port.rspTx.bits, port.snpTx.bits.payload, port.datTx.bits);
-      field <- bits.elements.values) {
-      field match {
-        case value: Bool => value.poke(false)
-        case value: UInt => value.poke(BigInt(0))
-      }
-    }
-    port.snpTx.bits.dst.poke(BigInt(0))
-  }
-
   private def waitFor(dut: ChiNodeFixtures.SnOnNoCModule, message: String)(condition: => Boolean): Unit = {
     var cycles = 0
     while (!condition && cycles < 128) {
