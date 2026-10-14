@@ -8,9 +8,10 @@ and receive them through valid/ready interfaces. Credit and bubble flow control
 handle backpressure and reserve space for forwarding.
 
 CHI subset payloads (REQ, RSP, SNP, DAT) connect through Diplomacy. Endpoint node IDs
-map to ring positions; DAT carries a complete 512-bit line. RN0, HN, RN1, and SN
-endpoint shells form a four-node system with external flit drivers. Endpoint
-transaction processing is pending.
+map to ring positions; DAT carries a complete 512-bit line. RN0 and RN1 accept local
+line-read requests. HN forwards ReadNoSnp to SN and returns CompData with the original
+request ID. SN reads initialized memory lines. Each endpoint handles one active
+transaction; writes, retry, caches, and snoops are pending.
 
 Each channel uses this topology in the four-node configuration:
 
