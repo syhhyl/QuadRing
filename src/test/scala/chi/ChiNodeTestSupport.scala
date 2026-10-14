@@ -45,6 +45,32 @@ private[chi] object ChiNodeFixtures {
     val io = IO(new ChiPort(outer.config.chi))
     outer.peer.in.head._1 <> io
   }
+
+  /** The HN port is externally driven until its write branch is implemented. */
+  class SnOnNoC(val config: ChiNoCParams, val ids: Seq[Int], val initialLines: Seq[BigInt])
+    (implicit p: Parameters) extends LazyModule {
+    require(config.ring.nodeCount == 4 && ids.size == 4, "SN fixture requires four ring stops")
+    val network = LazyModule(new ChiNoC(config))
+    val sn = LazyModule(new SnNode(SnParams(ids(3), initialLines)))
+    val drivers = Seq(ChiRole.RN, ChiRole.HN, ChiRole.RN).zip(ids).map { case (role, id) =>
+      new SourceNode(ChiNodeImp)(Seq(ChiEndpointParams(id, role)))
+    }
+    drivers.foreach { driver => network.node := driver }
+    network.node := sn.node
+    lazy val module = new SnOnNoCModule(this)
+  }
+  class SnOnNoCModule(outer: SnOnNoC) extends LazyModuleImp(outer) {
+    val io = IO(Flipped(new ChiPort(outer.config.chi)))
+    outer.drivers(1).out.head._1 <> io
+    for (driver <- Seq(outer.drivers.head, outer.drivers(2))) {
+      val port = driver.out.head._1
+      Seq(port.reqTx, port.rspTx, port.snpTx, port.datTx).foreach { tx =>
+        tx.valid := false.B
+        tx.bits := 0.U.asTypeOf(tx.bits)
+      }
+      Seq(port.reqRx, port.rspRx, port.snpRx, port.datRx).foreach(_.ready := true.B)
+    }
+  }
 }
 
 private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.TestSuite with Matchers =>
@@ -100,6 +126,21 @@ private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.Te
     req.pCrdType.expect(0.U)
   }
 
+  protected def writeRequest(req: ReqFlit, target: Int, src: Int, txn: Int, address: BigInt): Unit = {
+    request(req, target, src, txn, address)
+    req.opcode.poke(ChiOpcode.Req.WriteNoSnpFull)
+  }
+
+  protected def expectResponse(rsp: RspFlit, target: Int, src: Int, txn: Int, opcode: UInt): Unit = {
+    rsp.tgtID.expect(target.U)
+    rsp.srcID.expect(src.U)
+    rsp.txnID.expect(txn.U)
+    rsp.opcode.expect(opcode)
+    rsp.resp.expect(ChiResp.I)
+    rsp.dbID.expect(0.U)
+    rsp.pCrdType.expect(0.U)
+  }
+
   protected def data(dat: DatFlit, target: Int, src: Int, txn: Int, value: BigInt): Unit = {
     dat.tgtID.poke(BigInt(target))
     dat.srcID.poke(BigInt(src))
@@ -118,5 +159,10 @@ private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.Te
     dat.resp.expect(ChiResp.I)
     dat.dbID.expect(0.U)
     dat.data.expect(value.U)
+  }
+
+  protected def writeData(dat: DatFlit, target: Int, src: Int, dbId: Int, value: BigInt): Unit = {
+    data(dat, target, src, dbId, value)
+    dat.opcode.poke(ChiOpcode.Dat.NonCopyBackWrData)
   }
 }
