@@ -9,10 +9,11 @@ handle backpressure and reserve space for forwarding.
 
 CHI subset payloads (REQ, RSP, SNP, DAT) connect through Diplomacy. Endpoint node IDs
 map to ring positions; DAT carries a complete 512-bit line. RN0 and RN1 accept local
-line-read requests. HN forwards reads and whole-line writes to SN, preserves upstream
-request IDs, and waits for SN write completion. SN supports initialized whole-line
-reads and writes, with separate write authorization and completion. Each endpoint
-handles one active transaction; local RN writes, retry, caches, and snoops are pending.
+non-coherent line reads and writes. HN forwards reads and whole-line writes to SN,
+preserves upstream request IDs, and waits for SN write completion. SN supports
+initialized whole-line reads and writes, with separate write authorization and
+completion. Each endpoint handles one active transaction; retry, caches, and snoops
+are pending.
 
 Each channel uses this topology in the four-node configuration:
 

@@ -81,17 +81,107 @@ class RnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
     }
   }
 
-  "unsupported local writes are rejected rather than sent as reads" in {
+  for ((config, rn) <- configs) {
+    s"RN ${rn.nodeId} waits for write authorization, forwards data, and returns a completion" in {
+      simulate(LazyModule(new ChiNodeFixtures.Rn(config, rn)).module) { dut =>
+        val local = dut.io.local
+        val port = dut.io.network
+        initialize(local)
+        initialize(port)
+        val txn = (1 << config.chi.txnIdWidth) - 1
+        val dbId = 1 << (config.chi.txnIdWidth - 1)
+        val address = if (config.chi.addrWidth == 6) BigInt(0) else BigInt(128)
+        val value = (BigInt(1) << 511) | (BigInt(0x5a) << 256) | BigInt(0x1234)
+
+        localWriteRequest(local, txn, address, value)
+        local.request.ready.expect(true.B)
+        dut.clock.step()
+        local.request.valid.poke(false)
+        local.request.bits.data.poke(BigInt(0))
+        port.reqTx.ready.poke(false)
+        for (_ <- 0 until 6) {
+          local.request.ready.expect(false.B)
+          port.reqTx.valid.expect(true.B)
+          expectRequest(port.reqTx.bits, rn.hnId, rn.nodeId, txn, address,
+            ChiOpcode.Req.WriteNoSnpFull)
+          port.rspRx.ready.expect(false.B)
+          port.datTx.valid.expect(false.B)
+          dut.clock.step()
+        }
+        port.reqTx.ready.poke(true)
+        dut.clock.step()
+        port.reqTx.valid.expect(false.B)
+        port.rspRx.ready.expect(true.B)
+
+        response(port.rspRx.bits, rn.nodeId, rn.hnId, txn, ChiOpcode.Rsp.CompDBIDResp, dbId)
+        port.rspRx.valid.poke(true)
+        port.rspRx.valid.expect(true.B)
+        port.rspRx.ready.expect(true.B)
+        port.datTx.valid.expect(false.B)
+        local.response.valid.expect(false.B)
+        dut.clock.step()
+        port.rspRx.valid.poke(false)
+        port.rspRx.bits.dbID.poke(BigInt(0))
+        port.datTx.ready.poke(false)
+        for (_ <- 0 until 6) {
+          port.datTx.valid.expect(true.B)
+          expectData(port.datTx.bits, rn.hnId, rn.nodeId, dbId, value,
+            ChiOpcode.Dat.NonCopyBackWrData)
+          local.response.valid.expect(false.B)
+          dut.clock.step()
+        }
+        port.datTx.ready.poke(true)
+        dut.clock.step()
+        port.datTx.valid.expect(false.B)
+        for (_ <- 0 until 6) {
+          local.request.ready.expect(false.B)
+          local.response.valid.expect(true.B)
+          local.response.bits.txnID.expect(txn.U)
+          local.response.bits.data.expect(0.U)
+          dut.clock.step()
+        }
+        local.response.ready.poke(true)
+        dut.clock.step()
+        local.response.ready.poke(false)
+        local.request.ready.expect(true.B)
+        local.response.valid.expect(false.B)
+      }
+    }
+  }
+
+  "misaligned local writes are rejected" in {
     val error = intercept[AssertionFailed] {
       simulate(LazyModule(new ChiNodeFixtures.Rn(ChiNoCParams(), RnParams())).module) { dut =>
         initialize(dut.io.local)
         initialize(dut.io.network)
-        localRequest(dut.io.local, 3, 0)
-        dut.io.local.request.bits.write.poke(true)
+        localWriteRequest(dut.io.local, 3, 1, lines.head)
         dut.clock.step()
       }
     }
-    error.getMessage should include("only reads")
+    error.getMessage should include("line-aligned")
+  }
+
+  for ((field, wrongValue, message) <- Seq(
+    ("tgtID", 2, "another transaction"), ("srcID", 2, "another transaction"),
+    ("txnID", 12, "another transaction"), ("opcode", 4, "CompDBIDResp"),
+    ("resp", 2, "CompDBIDResp"), ("pCrdType", 1, "CompDBIDResp"))) {
+    s"write response with invalid $field cannot authorize RN data" in {
+      val error = intercept[AssertionFailed] {
+        simulate(LazyModule(new ChiNodeFixtures.Rn(ChiNoCParams(), RnParams())).module) { dut =>
+          initialize(dut.io.local)
+          initialize(dut.io.network)
+          localWriteRequest(dut.io.local, 13, 64, lines.head)
+          dut.clock.step()
+          dut.io.local.request.valid.poke(false)
+          dut.clock.step()
+          response(dut.io.network.rspRx.bits, 0, 1, 13, ChiOpcode.Rsp.CompDBIDResp, 8)
+          dut.io.network.rspRx.bits.elements(field).asInstanceOf[UInt].poke(BigInt(wrongValue))
+          dut.io.network.rspRx.valid.poke(true)
+          dut.clock.step()
+        }
+      }
+      error.getMessage should include(message)
+    }
   }
 
   for (wrongField <- Seq("srcID", "txnID", "opcode")) {

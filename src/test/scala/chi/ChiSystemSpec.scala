@@ -96,6 +96,71 @@ class ChiSystemSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
   }
 
   for (params <- configs) {
+    s"both RNs write complete lines through HN and SN (${params.network.chi})" in {
+      simulate(LazyModule(new ChiSystem(params)).module) { dut =>
+        ports(dut).foreach(initialize)
+        val mask = (1 << params.network.chi.txnIdWidth) - 1
+        for ((port, rn) <- ports(dut).zipWithIndex; index <- params.initialLines.indices) {
+          val txn = (mask - index - rn) & mask
+          val value = if (rn == 0) {
+            (BigInt(1) << 511) | (BigInt(index + 9) << 256) | BigInt(0xa5a50000L + index)
+          } else if (index == 0) BigInt(0) else (BigInt(1) << 512) - 1
+          localWriteRequest(port, txn, BigInt(index) << 6, value)
+          port.request.ready.expect(true.B)
+          dut.clock.step()
+          port.request.valid.poke(false)
+          port.request.bits.data.poke(BigInt(0))
+          waitForResult(dut, port, txn, 0)
+          for (_ <- 0 until 4) {
+            expectResult(port, txn, 0)
+            ports(dut)(1 - rn).response.valid.expect(false.B)
+            dut.clock.step()
+          }
+          port.response.ready.poke(true)
+          dut.clock.step()
+          port.response.ready.poke(false)
+          port.request.ready.expect(true.B)
+          // Read back through the other RN as well; the value must have reached SN.
+          val reader = ports(dut)(1 - rn)
+          val readTxn = (txn - 1) & mask
+          localRequest(reader, readTxn, BigInt(index) << 6)
+          reader.request.ready.expect(true.B)
+          dut.clock.step()
+          reader.request.valid.poke(false)
+          waitForResult(dut, reader, readTxn, value)
+          reader.response.ready.poke(true)
+          dut.clock.step()
+          reader.response.ready.poke(false)
+        }
+      }
+    }
+
+    s"RN write data and response remain stable under network and local backpressure (${params.network.chi})" in {
+      simulate(LazyModule(new ChiSystem(params)).module) { dut =>
+        ports(dut).foreach(initialize)
+        val port = dut.io.rn0
+        val txn = (1 << params.network.chi.txnIdWidth) - 1
+        val value = (BigInt(1) << 512) - 1
+        localWriteRequest(port, txn, 0, value)
+        dut.clock.step()
+        port.request.valid.poke(false)
+        port.request.bits.data.poke(BigInt(0))
+        // Keep the response blocked while the write traverses HN/SN.
+        for (_ <- 0 until 8) {
+          port.response.ready.poke(false)
+          dut.clock.step()
+        }
+        waitForResult(dut, port, txn, 0)
+        for (_ <- 0 until 8) {
+          expectResult(port, txn, 0)
+          dut.clock.step()
+        }
+        port.response.ready.poke(true)
+        dut.clock.step()
+        port.response.ready.poke(false)
+      }
+    }
+
     s"both RNs read every SN line through the real NoC with parameters ${params.network}" in {
       simulate(LazyModule(new ChiSystem(params)).module) { dut =>
         ports(dut).foreach(initialize)

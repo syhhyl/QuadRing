@@ -140,6 +140,14 @@ private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.Te
     port.request.valid.poke(true)
   }
 
+  protected def localWriteRequest(port: RnPort, txn: Int, address: BigInt, value: BigInt): Unit = {
+    port.request.bits.write.poke(true)
+    port.request.bits.addr.poke(address)
+    port.request.bits.txnID.poke(BigInt(txn))
+    port.request.bits.data.poke(value)
+    port.request.valid.poke(true)
+  }
+
   protected def request(req: ReqFlit, target: Int, src: Int, txn: Int, address: BigInt): Unit = {
     req.tgtID.poke(BigInt(target))
     req.srcID.poke(BigInt(src))
