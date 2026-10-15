@@ -31,6 +31,11 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val downstreamTxnId = 0.U(params.txnIdWidth.W)
   private val dbId = 0.U(params.txnIdWidth.W)
   private val snDbId = Reg(UInt(params.txnIdWidth.W))
+  private val retryAckSeen = RegInit(false.B)
+  private val creditHeld = RegInit(false.B)
+  private val retried = RegInit(false.B)
+  private val waitingForSnReply = state === waitSnData || state === waitSnDbId
+  private val retryReady = retryAckSeen && creditHeld
 
   port.reqRx.ready := state === idle
   when(port.reqRx.fire) {
@@ -41,6 +46,9 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     assert(req.addr(5, 0) === 0.U, "HN requires line-aligned addresses")
     assert(req.allowRetry && req.pCrdType === 0.U, "HN currently accepts only first attempts")
     request := req
+    retryAckSeen := false.B
+    creditHeld := false.B
+    retried := false.B
     state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
   }
 
@@ -49,8 +57,14 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.reqTx.bits.tgtID := outer.params.snId.U
   port.reqTx.bits.srcID := outer.params.nodeId.U
   port.reqTx.bits.txnID := downstreamTxnId
-  port.reqTx.bits.allowRetry := true.B
+  port.reqTx.bits.allowRetry := !retryReady
+  port.reqTx.bits.pCrdType := 0.U
   when(port.reqTx.fire) {
+    when(retryReady) {
+      retryAckSeen := false.B
+      creditHeld := false.B
+      retried := true.B
+    }
     state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp, waitSnData, waitSnDbId)
   }
 
@@ -63,7 +77,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.rspTx.bits.dbID := dbId
   when(port.rspTx.fire) { state := waitRnData }
 
-  port.datRx.ready := state === waitSnData || state === waitRnData
+  port.datRx.ready := state === waitRnData ||
+    (state === waitSnData && !retryAckSeen && !creditHeld && !port.rspRx.valid)
   when(port.datRx.fire) {
     val dat = port.datRx.bits
     when(state === waitSnData) {
@@ -82,22 +97,39 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     data := dat.data
   }
 
-  port.rspRx.ready := state === waitSnDbId || state === waitSnComp
+  port.rspRx.ready := (waitingForSnReply && !retryReady) || state === waitSnComp
   when(port.rspRx.fire) {
     val rsp = port.rspRx.bits
-    assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === outer.params.snId.U &&
-      rsp.txnID === downstreamTxnId, "HN received a response for another transaction")
+    assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === outer.params.snId.U,
+      "HN received a response for another transaction")
     assert(rsp.resp === ChiResp.I && rsp.pCrdType === 0.U, "HN expects non-coherent SN responses")
-    when(state === waitSnDbId) {
-      assert(rsp.opcode === ChiOpcode.Rsp.DBIDResp, "HN expects SN DBIDResp")
-      snDbId := rsp.dbID
-      state := sendSnData
+    when(rsp.opcode === ChiOpcode.Rsp.RetryAck || rsp.opcode === ChiOpcode.Rsp.PCrdGrant) {
+      assert(waitingForSnReply && !retried, "HN cannot retry an already accepted SN request")
+      when(rsp.opcode === ChiOpcode.Rsp.RetryAck) {
+        assert(rsp.txnID === downstreamTxnId, "HN received RetryAck for another transaction")
+        assert(rsp.dbID === 0.U, "HN expects zero RetryAck DBID")
+        assert(!retryAckSeen, "HN received duplicate RetryAck")
+        retryAckSeen := true.B
+      }.otherwise {
+        assert(rsp.txnID === 0.U && rsp.dbID === 0.U, "HN expects zero PCrdGrant IDs")
+        assert(!creditHeld, "HN received duplicate PCrdGrant")
+        creditHeld := true.B
+      }
     }.otherwise {
-      assert(rsp.opcode === ChiOpcode.Rsp.Comp, "HN expects SN write completion")
-      assert(rsp.dbID === snDbId, "HN received completion for another data slot")
-      state := idle
+      assert(rsp.txnID === downstreamTxnId, "HN received a response for another transaction")
+      assert(!retryAckSeen && !creditHeld, "HN cannot complete a request awaiting retry")
+      when(state === waitSnDbId) {
+        assert(rsp.opcode === ChiOpcode.Rsp.DBIDResp, "HN expects SN DBIDResp")
+        snDbId := rsp.dbID
+        state := sendSnData
+      }.otherwise {
+        assert(state === waitSnComp && rsp.opcode === ChiOpcode.Rsp.Comp, "HN expects SN write completion")
+        assert(rsp.dbID === snDbId, "HN received completion for another data slot")
+        state := idle
+      }
     }
   }
+  when(waitingForSnReply && retryReady) { state := sendSnReq }
 
   port.datTx.valid := state === sendRnData || state === sendSnData
   port.datTx.bits := 0.U.asTypeOf(port.datTx.bits)

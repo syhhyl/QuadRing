@@ -159,13 +159,13 @@ private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.Te
   }
 
   protected def expectRequest(req: ReqFlit, target: Int, src: Int, txn: Int, address: BigInt,
-    opcode: UInt = ChiOpcode.Req.ReadNoSnp): Unit = {
+    opcode: UInt = ChiOpcode.Req.ReadNoSnp, allowRetry: Boolean = true): Unit = {
     req.tgtID.expect(target.U)
     req.srcID.expect(src.U)
     req.txnID.expect(txn.U)
     req.opcode.expect(opcode)
     req.addr.expect(address.U)
-    req.allowRetry.expect(true.B)
+    req.allowRetry.expect(allowRetry.B)
     req.pCrdType.expect(0.U)
   }
 

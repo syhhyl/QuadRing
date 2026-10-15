@@ -12,8 +12,9 @@ map to ring positions; DAT carries a complete 512-bit line. RN0 and RN1 accept l
 non-coherent line reads and writes. HN forwards reads and whole-line writes to SN,
 preserves upstream request IDs, and waits for SN write completion. SN supports
 initialized whole-line reads and writes, with separate write authorization and
-completion. Each endpoint handles one active transaction; retry, caches, and snoops
-are pending.
+completion. Each endpoint handles one active transaction. RN and HN can retry
+rejected requests after RetryAck and PCrdGrant. Retry admission at HN/SN, caches,
+and snoops are pending.
 
 Each channel uses this topology in the four-node configuration:
 

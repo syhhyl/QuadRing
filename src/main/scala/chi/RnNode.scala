@@ -28,11 +28,19 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   private val request = Reg(new RnRequest(params))
   private val result = Reg(new RnResponse(params))
   private val writeDbId = Reg(UInt(params.txnIdWidth.W))
+  private val retryAckSeen = RegInit(false.B)
+  private val creditHeld = RegInit(false.B)
+  private val retried = RegInit(false.B)
+  private val waitingForReply = state === waitData || state === waitDbId
+  private val retryReady = retryAckSeen && creditHeld
 
   io.request.ready := state === idle
   when(io.request.fire) {
     assert(io.request.bits.addr(5, 0) === 0.U, "RN requires line-aligned addresses")
     request := io.request.bits
+    retryAckSeen := false.B
+    creditHeld := false.B
+    retried := false.B
     state := sendReq
   }
 
@@ -43,10 +51,18 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   port.reqTx.bits.txnID := request.txnID
   port.reqTx.bits.opcode := Mux(request.write, ChiOpcode.Req.WriteNoSnpFull, ChiOpcode.Req.ReadNoSnp)
   port.reqTx.bits.addr := request.addr
-  port.reqTx.bits.allowRetry := true.B
-  when(port.reqTx.fire) { state := Mux(request.write, waitDbId, waitData) }
+  port.reqTx.bits.allowRetry := !retryReady
+  when(port.reqTx.fire) {
+    when(retryReady) {
+      retryAckSeen := false.B
+      creditHeld := false.B
+      retried := true.B
+    }
+    state := Mux(request.write, waitDbId, waitData)
+  }
 
-  port.datRx.ready := state === waitData
+  // RSP takes priority if data and a retry response arrive together.
+  port.datRx.ready := state === waitData && !retryAckSeen && !creditHeld && !port.rspRx.valid
   when(port.datRx.fire) {
     val dat = port.datRx.bits
     assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === outer.params.hnId.U &&
@@ -58,16 +74,35 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
     state := returnResult
   }
 
-  port.rspRx.ready := state === waitDbId
+  port.rspRx.ready := waitingForReply && !retryReady
   when(port.rspRx.fire) {
     val rsp = port.rspRx.bits
-    assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === outer.params.hnId.U &&
-      rsp.txnID === request.txnID, "RN received a response for another transaction")
-    assert(rsp.opcode === ChiOpcode.Rsp.CompDBIDResp && rsp.resp === ChiResp.I &&
-      rsp.pCrdType === 0.U, "RN expects non-coherent CompDBIDResp")
-    writeDbId := rsp.dbID
-    state := sendWriteData
+    assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === outer.params.hnId.U,
+      "RN received a response for another transaction")
+    when(rsp.opcode === ChiOpcode.Rsp.RetryAck || rsp.opcode === ChiOpcode.Rsp.PCrdGrant) {
+      assert(!retried, "RN cannot retry an already credited request")
+      assert(rsp.resp === ChiResp.I && rsp.pCrdType === 0.U, "RN expects retry credit type zero")
+      when(rsp.opcode === ChiOpcode.Rsp.RetryAck) {
+        assert(rsp.txnID === request.txnID, "RN received RetryAck for another transaction")
+        assert(rsp.dbID === 0.U, "RN expects zero RetryAck DBID")
+        assert(!retryAckSeen, "RN received duplicate RetryAck")
+        retryAckSeen := true.B
+      }.otherwise {
+        assert(rsp.txnID === 0.U && rsp.dbID === 0.U, "RN expects zero PCrdGrant IDs")
+        assert(!creditHeld, "RN received duplicate PCrdGrant")
+        creditHeld := true.B
+      }
+    }.otherwise {
+      assert(rsp.txnID === request.txnID, "RN received a response for another transaction")
+      assert(state === waitDbId && !retryAckSeen && !creditHeld,
+        "RN cannot complete a request awaiting retry")
+      assert(rsp.opcode === ChiOpcode.Rsp.CompDBIDResp && rsp.resp === ChiResp.I &&
+        rsp.pCrdType === 0.U, "RN expects non-coherent CompDBIDResp")
+      writeDbId := rsp.dbID
+      state := sendWriteData
+    }
   }
+  when(waitingForReply && retryReady) { state := sendReq }
 
   port.datTx.valid := state === sendWriteData
   port.datTx.bits := 0.U.asTypeOf(port.datTx.bits)
