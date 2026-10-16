@@ -99,7 +99,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   if (outer.params.coherent) {
     val coherentRead = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
       port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique
-    when(port.reqRx.fire && coherentRead) {
+    val evict = port.reqRx.bits.opcode === ChiOpcode.Req.Evict
+    when(port.reqRx.fire && (coherentRead || evict)) {
       // This directory covers a bounded address space; entries are never replaced.
       assert(requestInDirectoryRange, "HN address exceeds directory range")
     }
@@ -139,6 +140,14 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
           directoryHolderIds(requestDirectoryIndex)(slot) := port.reqRx.bits.srcID
           directoryHolderStates(requestDirectoryIndex)(slot) := RnCacheState.SC
         }
+      }.elsewhen(evict) {
+        for (slot <- 0 until 2) {
+          when(directoryHolderValid(requestDirectoryIndex)(slot) &&
+            directoryHolderIds(requestDirectoryIndex)(slot) === port.reqRx.bits.srcID) {
+            directoryHolderValid(requestDirectoryIndex)(slot) := false.B
+            directoryHolderStates(requestDirectoryIndex)(slot) := RnCacheState.I
+          }
+        }
       }.otherwise {
         assert(!directoryOccupied, "HN non-coherent access requires an uncached line")
       }
@@ -172,8 +181,9 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     }.elsewhen(state === idle) {
       if (outer.params.coherent) {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull ||
-          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
-          "HN currently supports only non-coherent reads/writes and coherent reads")
+          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique ||
+          req.opcode === ChiOpcode.Req.Evict,
+          "HN currently supports only non-coherent reads/writes, coherent reads and Evict")
       } else {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
           "HN currently supports only ReadNoSnp and WriteNoSnpFull")
@@ -195,8 +205,9 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     }.otherwise {
       if (outer.params.coherent) {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull ||
-          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
-          "HN currently supports only non-coherent reads/writes and coherent reads")
+          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique ||
+          req.opcode === ChiOpcode.Req.Evict,
+          "HN currently supports only non-coherent reads/writes, coherent reads and Evict")
       } else {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
           "HN currently supports only ReadNoSnp and WriteNoSnpFull")
@@ -254,12 +265,19 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.rspTx.bits.srcID := outer.params.nodeId.U
   port.rspTx.bits.txnID := Mux(state === sendRnRsp, request.txnID,
     Mux(retryAckPending, retryAckTxn, 0.U))
-  port.rspTx.bits.opcode := Mux(state === sendRnRsp, ChiOpcode.Rsp.CompDBIDResp,
+  private val rnResponseOpcode = if (outer.params.coherent) {
+    Mux(request.opcode === ChiOpcode.Req.Evict, ChiOpcode.Rsp.Comp, ChiOpcode.Rsp.CompDBIDResp)
+  } else ChiOpcode.Rsp.CompDBIDResp
+  port.rspTx.bits.opcode := Mux(state === sendRnRsp, rnResponseOpcode,
     Mux(retryAckPending, ChiOpcode.Rsp.RetryAck, ChiOpcode.Rsp.PCrdGrant))
   port.rspTx.bits.dbID := Mux(state === sendGrant, 0.U, dbId)
   when(port.rspTx.fire) {
     when(state === sendRnRsp) {
-      state := waitRnData
+      if (outer.params.coherent) {
+        state := Mux(request.opcode === ChiOpcode.Req.Evict, idle, waitRnData)
+      } else {
+        state := waitRnData
+      }
     }.elsewhen(retryAckPending) {
       retryAckPending := false.B
     }.elsewhen(state === sendGrant) {
