@@ -93,6 +93,28 @@ private[chi] object ChiNodeFixtures {
     val io = IO(Vec(2, Flipped(new ChiPort(outer.config.chi))))
     outer.drivers.zip(io).foreach { case (driver, port) => driver.out.head._1 <> port }
   }
+
+  /** Coherent integration fixture; expose only the two real RNs' local interfaces. */
+  class CoherentSystem(val config: ChiNoCParams, val ids: Seq[Int], val initialLines: Seq[BigInt],
+    cacheLines: Int)(implicit p: Parameters) extends LazyModule {
+    require(config.ring.nodeCount == 4 && ids.size == 4, "coherent fixture requires four ring stops")
+    val network = LazyModule(new ChiNoC(config))
+    val rn0 = LazyModule(new RnNode(RnParams(ids.head, ids(1), coherent = true, cacheLines = cacheLines)))
+    val hn = LazyModule(new HnNode(HnParams(ids(1), ids(3), coherent = true,
+      directoryLines = initialLines.size)))
+    val rn1 = LazyModule(new RnNode(RnParams(ids(2), ids(1), coherent = true, cacheLines = cacheLines)))
+    val sn = LazyModule(new SnNode(SnParams(ids(3), initialLines)))
+    network.node := rn0.node
+    network.node := hn.node
+    network.node := rn1.node
+    network.node := sn.node
+    lazy val module = new CoherentSystemModule(this)
+  }
+  class CoherentSystemModule(outer: CoherentSystem) extends LazyModuleImp(outer) {
+    val io = IO(Vec(2, new RnPort(outer.config.chi)))
+    io.head <> outer.rn0.module.io
+    io(1) <> outer.rn1.module.io
+  }
 }
 
 private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.TestSuite with Matchers =>

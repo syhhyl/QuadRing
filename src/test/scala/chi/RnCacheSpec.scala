@@ -193,27 +193,24 @@ class RnCacheSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
     error.getMessage should include("ReadUnique requires unique permission")
   }
 
-  for (dirty <- Seq(false, true)) {
-    s"a conflicting cache address requires replacement when dirty=$dirty" in {
-      val error = intercept[AssertionFailed] {
-        simulate(LazyModule(new ChiNodeFixtures.Rn(config, rn)).module) { dut =>
-          val local = dut.io.local
-          initialize(local)
-          initialize(dut.io.network)
-          if (dirty) localWriteRequest(local, 1, 0, lines.head)
-          else localRequest(local, 1, 0)
-          dut.clock.step()
-          local.request.valid.poke(false)
-          dut.clock.step()
-          completeDataRead(dut, 0, 1, lines.head, ChiResp.UC)
-          local.response.ready.poke(true)
-          dut.clock.step()
-          localRequest(local, 2, BigInt(rn.cacheLines * 64))
-          dut.clock.step()
-        }
+  "a conflicting dirty cache address still requires WriteBackFull" in {
+    val error = intercept[AssertionFailed] {
+      simulate(LazyModule(new ChiNodeFixtures.Rn(config, rn)).module) { dut =>
+        val local = dut.io.local
+        initialize(local)
+        initialize(dut.io.network)
+        localWriteRequest(local, 1, 0, lines.head)
+        dut.clock.step()
+        local.request.valid.poke(false)
+        dut.clock.step()
+        completeDataRead(dut, 0, 1, lines.head, ChiResp.UC)
+        local.response.ready.poke(true)
+        dut.clock.step()
+        localRequest(local, 2, BigInt(rn.cacheLines * 64))
+        dut.clock.step()
       }
-      error.getMessage should include("cache replacement requires Evict or WriteBackFull")
     }
+    error.getMessage should include("dirty cache replacement requires WriteBackFull")
   }
 
   "cache parameters require a power-of-two line count" in {
