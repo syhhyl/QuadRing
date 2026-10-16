@@ -27,28 +27,58 @@ class SnNodeModule(outer: SnNode) extends LazyModuleImp(outer) {
     "SN memory does not fit the negotiated address width")
 
   private val memory = RegInit(VecInit(initialLines.map(_.U(512.W))))
-  val idle :: readLine :: sendData :: sendDbId :: waitWriteData :: writeLine :: sendComp :: Nil = Enum(7)
+  val (idle :: readLine :: sendData :: sendDbId :: waitWriteData :: writeLine :: sendComp ::
+    sendGrant :: waitRetryReq :: Nil) = Enum(9)
   val state = RegInit(idle)
   private val request = Reg(new ReqFlit(params))
   private val data = Reg(UInt(512.W))
   // A single active data slot; write DAT uses this ID, not the original REQ txnID.
   private val dbId = 0.U(params.txnIdWidth.W)
+  private val retryWaiting = RegInit(false.B)
+  private val retryRequest = Reg(new ReqFlit(params))
+  private val retryAckPending = RegInit(false.B)
+  private val retryAckTarget = Reg(UInt(params.nodeIdWidth.W))
+  private val retryAckTxn = Reg(UInt(params.txnIdWidth.W))
+  private val activeState = state =/= idle && state =/= sendGrant && state =/= waitRetryReq
   private val memoryLine = if (initialLines.size == 1) memory(0) else {
     val index = (request.addr >> 6)(log2Ceil(initialLines.size) - 1, 0)
     memory(index)
   }
 
-  port.reqRx.ready := state === idle
+  port.reqRx.ready := (state === idle && !retryWaiting) ||
+    (activeState && !retryWaiting && !retryAckPending) ||
+    state === waitRetryReq
   when(port.reqRx.fire) {
     val req = port.reqRx.bits
-    assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
-      "SN currently supports only ReadNoSnp and WriteNoSnpFull")
-    assert(req.tgtID === outer.params.nodeId.U, "REQ target must be this SN")
-    assert(req.addr(5, 0) === 0.U, "SN requires line-aligned addresses")
-    assert((req.addr >> 6) < initialLines.size.U, "SN address is outside memory")
-    assert(req.allowRetry && req.pCrdType === 0.U, "SN currently accepts only first attempts")
-    request := req
-    state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, readLine, sendDbId)
+    when(state === waitRetryReq) {
+      assert(req.opcode === retryRequest.opcode && req.addr === retryRequest.addr &&
+        req.txnID === retryRequest.txnID && req.srcID === retryRequest.srcID &&
+        req.tgtID === retryRequest.tgtID, "SN received a retry for another request")
+      assert(!req.allowRetry && req.pCrdType === 0.U, "SN expects a credited retry")
+      retryWaiting := false.B
+      request := req
+      state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, readLine, sendDbId)
+    }.elsewhen(state === idle) {
+      assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
+        "SN currently supports only ReadNoSnp and WriteNoSnpFull")
+      assert(req.tgtID === outer.params.nodeId.U, "REQ target must be this SN")
+      assert(req.addr(5, 0) === 0.U, "SN requires line-aligned addresses")
+      assert((req.addr >> 6) < initialLines.size.U, "SN address is outside memory")
+      assert(req.allowRetry && req.pCrdType === 0.U, "SN currently accepts only first attempts")
+      request := req
+      state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, readLine, sendDbId)
+    }.otherwise {
+      assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
+        "SN currently supports only ReadNoSnp and WriteNoSnpFull")
+      assert(req.tgtID === outer.params.nodeId.U && req.addr(5, 0) === 0.U &&
+        (req.addr >> 6) < initialLines.size.U && req.allowRetry && req.pCrdType === 0.U,
+        "SN expects a retryable first attempt")
+      retryRequest := req
+      retryWaiting := true.B
+      retryAckTarget := req.srcID
+      retryAckTxn := req.txnID
+      retryAckPending := true.B
+    }
   }
 
   when(state === readLine) {
@@ -64,17 +94,31 @@ class SnNodeModule(outer: SnNode) extends LazyModuleImp(outer) {
   port.datTx.bits.opcode := ChiOpcode.Dat.CompData
   port.datTx.bits.resp := ChiResp.I
   port.datTx.bits.data := data
-  when(port.datTx.fire) { state := idle }
+  when(port.datTx.fire) { state := Mux(retryWaiting, sendGrant, idle) }
 
-  port.rspTx.valid := state === sendDbId || state === sendComp
+  port.rspTx.valid := retryAckPending || state === sendDbId || state === sendComp || state === sendGrant
   port.rspTx.bits := 0.U.asTypeOf(port.rspTx.bits)
-  port.rspTx.bits.tgtID := request.srcID
+  port.rspTx.bits.tgtID := Mux(state === sendDbId || state === sendComp, request.srcID,
+    Mux(retryAckPending, retryAckTarget, retryRequest.srcID))
   port.rspTx.bits.srcID := outer.params.nodeId.U
-  port.rspTx.bits.txnID := request.txnID
-  port.rspTx.bits.opcode := Mux(state === sendDbId, ChiOpcode.Rsp.DBIDResp, ChiOpcode.Rsp.Comp)
-  port.rspTx.bits.dbID := dbId
+  port.rspTx.bits.txnID := Mux(state === sendDbId || state === sendComp, request.txnID,
+    Mux(retryAckPending, retryAckTxn, 0.U))
+  port.rspTx.bits.opcode := Mux(state === sendDbId, ChiOpcode.Rsp.DBIDResp,
+    Mux(state === sendComp, ChiOpcode.Rsp.Comp,
+      Mux(retryAckPending, ChiOpcode.Rsp.RetryAck, ChiOpcode.Rsp.PCrdGrant)))
+  port.rspTx.bits.dbID := Mux(state === sendGrant, 0.U, dbId)
   when(port.rspTx.fire) {
-    state := Mux(state === sendDbId, waitWriteData, idle)
+    when(state === sendDbId) {
+      state := waitWriteData
+    }.elsewhen(state === sendComp) {
+      state := Mux(retryWaiting, sendGrant, idle)
+    }.elsewhen(retryAckPending) {
+      retryAckPending := false.B
+    }.elsewhen(state === sendGrant) {
+      state := waitRetryReq
+    }.otherwise {
+      state := idle
+    }
   }
 
   port.datRx.ready := state === waitWriteData
@@ -99,4 +143,6 @@ class SnNodeModule(outer: SnNode) extends LazyModuleImp(outer) {
   port.snpTx.bits := 0.U.asTypeOf(port.snpTx.bits)
   port.rspRx.ready := false.B
   port.snpRx.ready := false.B
+
+  when(state === idle && retryWaiting) { state := sendGrant }
 }

@@ -68,9 +68,42 @@ class HnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
   }
 
   private def receiveRead(dut: ChiNodeFixtures.HnSnOnNoCModule, ids: Seq[Int],
-    rn: Int, txn: Int, value: BigInt): Unit = {
+    rn: Int, txn: Int, index: Int, value: BigInt): Unit = {
     val port = dut.io(rn)
-    waitFor(dut, "read after HN write did not finish: ")(port.datRx.valid.peekBoolean())
+    var retryAck = false
+    var credit = false
+    var resent = false
+    var cycles = 0
+    while (!port.datRx.valid.peekBoolean() && cycles < 128) {
+      if (port.rspRx.valid.peekBoolean()) {
+        val opcode = port.rspRx.bits.opcode.peek().litValue.toInt
+        opcode match {
+          case value if value == ChiOpcode.Rsp.RetryAck.litValue.toInt =>
+            expectResponse(port.rspRx.bits, rnId(ids, rn), ids(1), txn, ChiOpcode.Rsp.RetryAck)
+            retryAck = true
+          case value if value == ChiOpcode.Rsp.PCrdGrant.litValue.toInt =>
+            expectResponse(port.rspRx.bits, rnId(ids, rn), ids(1), 0, ChiOpcode.Rsp.PCrdGrant)
+            credit = true
+          case _ => fail(s"unexpected HN response opcode $opcode while waiting for read data")
+        }
+        port.rspRx.ready.poke(true)
+        dut.clock.step()
+        port.rspRx.ready.poke(false)
+        if (retryAck && credit && !resent) {
+          request(port.reqTx.bits, ids(1), rnId(ids, rn), txn, BigInt(index) << 6)
+          port.reqTx.bits.allowRetry.poke(false)
+          port.reqTx.valid.poke(true)
+          waitFor(dut, "credited RN REQ injection stalled: ")(port.reqTx.ready.peekBoolean())
+          dut.clock.step()
+          port.reqTx.valid.poke(false)
+          resent = true
+        }
+      } else {
+        dut.clock.step()
+      }
+      cycles += 1
+    }
+    withClue("read after HN write did not finish: ") { port.datRx.valid.peekBoolean() shouldBe true }
     for (_ <- 0 until 8) {
       port.datRx.valid.expect(true.B)
       expectData(port.datRx.bits, rnId(ids, rn), ids(1), txn, value)
@@ -126,13 +159,13 @@ class HnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           expected(index) = value
           // RN may issue its next request as soon as its write DAT is accepted.
           sendRequest(dut, ids, rn, txn, index, write = false)
-          receiveRead(dut, ids, rn, txn, value)
+          receiveRead(dut, ids, rn, txn, index, value)
           sendRequest(dut, ids, 1 - rn, txn, index, write = false)
-          receiveRead(dut, ids, 1 - rn, txn, value)
+          receiveRead(dut, ids, 1 - rn, txn, index, value)
         }
         for (rn <- 0 until 2; index <- expected.indices) {
           sendRequest(dut, ids, rn, txn - 1, index, write = false)
-          receiveRead(dut, ids, rn, txn - 1, expected(index))
+          receiveRead(dut, ids, rn, txn - 1, index, expected(index))
         }
         for (_ <- 0 until 24) {
           for (port <- dut.io) {
@@ -169,7 +202,7 @@ class HnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           dut.clock.step()
         }
         sendRequest(dut, ids, 1, 2, 1, write = false)
-        receiveRead(dut, ids, 1, 2, lines(1))
+        receiveRead(dut, ids, 1, 2, 1, lines(1))
       }
     }
   }

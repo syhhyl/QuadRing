@@ -6,8 +6,9 @@ import org.chipsalliance.cde.config.Parameters
 import org.chipsalliance.diplomacy.lazymodule._
 import org.chipsalliance.diplomacy.nodes._
 
-case class HnParams(nodeId: Int = 1, snId: Int = 3) {
+case class HnParams(nodeId: Int = 1, snId: Int = 3, retrySlots: Int = 2) {
   require(nodeId >= 0 && snId >= 0, "HN and SN node IDs must be nonnegative")
+  require(retrySlots > 0, "HN must have at least one retry slot")
 }
 
 /** One upstream transaction; retain its identity while issuing a downstream request. */
@@ -23,7 +24,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     "SN target does not fit the negotiated node ID width")
 
   val (idle :: sendSnReq :: waitSnData :: sendRnData :: sendRnRsp ::
-    waitRnData :: waitSnDbId :: sendSnData :: waitSnComp :: Nil) = Enum(9)
+    waitRnData :: waitSnDbId :: sendSnData :: waitSnComp :: sendGrant :: waitRetryReq :: Nil) = Enum(11)
   val state = RegInit(idle)
   private val request = Reg(new ReqFlit(params))
   private val data = Reg(UInt(512.W))
@@ -34,22 +35,84 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val retryAckSeen = RegInit(false.B)
   private val creditHeld = RegInit(false.B)
   private val retried = RegInit(false.B)
+  private val retryWaiting = RegInit(VecInit(Seq.fill(outer.params.retrySlots)(false.B)))
+  private val retryRequests = Reg(Vec(outer.params.retrySlots, new ReqFlit(params)))
+  private val retryAckPending = RegInit(false.B)
+  private val retryAckTarget = Reg(UInt(params.nodeIdWidth.W))
+  private val retryAckTxn = Reg(UInt(params.txnIdWidth.W))
+  private val slotWidth = log2Ceil(outer.params.retrySlots max 2)
+  private val grantSlot = Reg(UInt(slotWidth.W))
+  private val rrSlot = RegInit(0.U(slotWidth.W))
   private val waitingForSnReply = state === waitSnData || state === waitSnDbId
   private val retryReady = retryAckSeen && creditHeld
+  private val hasRetryWaiting = retryWaiting.asUInt.orR
+  private val retrySlotFree = retryWaiting.map(slot => !slot).reduce(_ || _)
+  private val duplicateRetry = retryWaiting.zip(retryRequests).map { case (valid, saved) =>
+    valid && saved.srcID === port.reqRx.bits.srcID
+  }.reduce(_ || _)
+  private val activeState = state =/= idle && state =/= sendGrant && state =/= waitRetryReq
+  private val selectedRetrySlot: UInt = {
+    var found: Bool = false.B
+    var selected: UInt = 0.U(slotWidth.W)
+    for (start <- 0 until outer.params.retrySlots; distance <- 0 until outer.params.retrySlots) {
+      val index = (start + distance) % outer.params.retrySlots
+      val take = !found && rrSlot === start.U && retryWaiting(index)
+      selected = Mux(take, index.U(slotWidth.W), selected)
+      found = found || (rrSlot === start.U && retryWaiting(index))
+    }
+    selected
+  }
 
-  port.reqRx.ready := state === idle
+  port.reqRx.ready := (state === idle && !hasRetryWaiting) ||
+    (activeState && retrySlotFree && !retryAckPending) ||
+    state === waitRetryReq
   when(port.reqRx.fire) {
     val req = port.reqRx.bits
-    assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
-      "HN currently supports only ReadNoSnp and WriteNoSnpFull")
-    assert(req.tgtID === outer.params.nodeId.U, "REQ target must be this HN")
-    assert(req.addr(5, 0) === 0.U, "HN requires line-aligned addresses")
-    assert(req.allowRetry && req.pCrdType === 0.U, "HN currently accepts only first attempts")
-    request := req
-    retryAckSeen := false.B
-    creditHeld := false.B
-    retried := false.B
-    state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+    when(state === waitRetryReq) {
+      val saved = retryRequests(grantSlot)
+      assert(req.opcode === saved.opcode && req.addr === saved.addr && req.txnID === saved.txnID &&
+        req.srcID === saved.srcID && req.tgtID === saved.tgtID,
+        "HN received a retry for another request")
+      assert(!req.allowRetry && req.pCrdType === 0.U, "HN expects a credited retry")
+      request := req
+      retryWaiting(grantSlot) := false.B
+      rrSlot := Mux(grantSlot === (outer.params.retrySlots - 1).U, 0.U, grantSlot + 1.U)
+      retryAckSeen := false.B
+      creditHeld := false.B
+      retried := true.B
+      state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+    }.elsewhen(state === idle) {
+      assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
+        "HN currently supports only ReadNoSnp and WriteNoSnpFull")
+      assert(req.tgtID === outer.params.nodeId.U, "REQ target must be this HN")
+      assert(req.addr(5, 0) === 0.U, "HN requires line-aligned addresses")
+      assert(req.allowRetry && req.pCrdType === 0.U, "HN currently accepts only first attempts")
+      request := req
+      retryAckSeen := false.B
+      creditHeld := false.B
+      retried := false.B
+      state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+    }.otherwise {
+      assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
+        "HN currently supports only ReadNoSnp and WriteNoSnpFull")
+      assert(req.tgtID === outer.params.nodeId.U && req.addr(5, 0) === 0.U &&
+        req.allowRetry && req.pCrdType === 0.U,
+        "HN expects a retryable first attempt")
+      assert(retrySlotFree && !retryAckPending, "HN retry table is full")
+      assert(!duplicateRetry, "HN already has a retry waiting for this requester")
+      var allEarlierOccupied: Bool = true.B
+      for (slot <- 0 until outer.params.retrySlots) {
+        val choose = allEarlierOccupied && !retryWaiting(slot)
+        when(choose) {
+          retryRequests(slot) := req
+          retryWaiting(slot) := true.B
+        }
+        allEarlierOccupied = allEarlierOccupied && retryWaiting(slot)
+      }
+      retryAckTarget := req.srcID
+      retryAckTxn := req.txnID
+      retryAckPending := true.B
+    }
   }
 
   port.reqTx.valid := state === sendSnReq
@@ -68,14 +131,27 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp, waitSnData, waitSnDbId)
   }
 
-  port.rspTx.valid := state === sendRnRsp
+  port.rspTx.valid := retryAckPending || state === sendRnRsp || state === sendGrant
   port.rspTx.bits := 0.U.asTypeOf(port.rspTx.bits)
-  port.rspTx.bits.tgtID := request.srcID
+  port.rspTx.bits.tgtID := Mux(state === sendRnRsp, request.srcID,
+    Mux(retryAckPending, retryAckTarget, retryRequests(grantSlot).srcID))
   port.rspTx.bits.srcID := outer.params.nodeId.U
-  port.rspTx.bits.txnID := request.txnID
-  port.rspTx.bits.opcode := ChiOpcode.Rsp.CompDBIDResp
-  port.rspTx.bits.dbID := dbId
-  when(port.rspTx.fire) { state := waitRnData }
+  port.rspTx.bits.txnID := Mux(state === sendRnRsp, request.txnID,
+    Mux(retryAckPending, retryAckTxn, 0.U))
+  port.rspTx.bits.opcode := Mux(state === sendRnRsp, ChiOpcode.Rsp.CompDBIDResp,
+    Mux(retryAckPending, ChiOpcode.Rsp.RetryAck, ChiOpcode.Rsp.PCrdGrant))
+  port.rspTx.bits.dbID := Mux(state === sendGrant, 0.U, dbId)
+  when(port.rspTx.fire) {
+    when(state === sendRnRsp) {
+      state := waitRnData
+    }.elsewhen(retryAckPending) {
+      retryAckPending := false.B
+    }.elsewhen(state === sendGrant) {
+      state := waitRetryReq
+    }.otherwise {
+      state := waitRnData
+    }
+  }
 
   port.datRx.ready := state === waitRnData ||
     (state === waitSnData && !retryAckSeen && !creditHeld && !port.rspRx.valid)
@@ -139,9 +215,16 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.datTx.bits.opcode := Mux(state === sendSnData, ChiOpcode.Dat.NonCopyBackWrData, ChiOpcode.Dat.CompData)
   port.datTx.bits.resp := ChiResp.I
   port.datTx.bits.data := data
-  when(port.datTx.fire) { state := Mux(state === sendRnData, idle, waitSnComp) }
+  when(port.datTx.fire) {
+    state := Mux(state === sendRnData, idle, waitSnComp)
+  }
 
   port.snpTx.valid := false.B
   port.snpTx.bits := 0.U.asTypeOf(port.snpTx.bits)
   port.snpRx.ready := false.B
+
+  when(state === idle && hasRetryWaiting) {
+    grantSlot := selectedRetrySlot
+    state := sendGrant
+  }
 }

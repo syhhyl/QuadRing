@@ -41,7 +41,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.reqRx.valid.poke(false)
           request(port.reqRx.bits, hn.nodeId, rn1, 3, 64)
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.reqTx.valid.expect(true.B)
             expectRequest(port.reqTx.bits, hn.snId, hn.nodeId, 0, address)
             port.datRx.ready.expect(false.B)
@@ -58,7 +58,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.datRx.valid.poke(false)
           port.datRx.bits.data.poke(BigInt(0))
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.datTx.valid.expect(true.B)
             expectData(port.datTx.bits, src, hn.nodeId, txn, value)
             port.rspTx.valid.expect(false.B)
@@ -132,8 +132,9 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           request(port.reqRx.bits, hn.nodeId, rn1, 0, 0)
           writeData(port.datRx.bits, hn.nodeId, src, 0, value)
           port.datRx.valid.poke(true)
+          port.reqRx.valid.poke(false)
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.datRx.ready.expect(false.B)
             port.reqTx.valid.expect(false.B)
             port.rspTx.valid.expect(true.B)
@@ -145,7 +146,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.datRx.valid.poke(false)
           for (_ <- 0 until 3) {
             port.datRx.ready.expect(true.B)
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.reqTx.valid.expect(false.B)
             port.rspTx.valid.expect(false.B)
             dut.clock.step()
@@ -155,7 +156,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.datRx.valid.poke(false)
           port.datRx.bits.data.poke(BigInt(0))
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.reqTx.valid.expect(true.B)
             expectRequest(port.reqTx.bits, hn.snId, hn.nodeId, 0, addr, ChiOpcode.Req.WriteNoSnpFull)
             port.rspRx.ready.expect(false.B)
@@ -165,7 +166,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.reqTx.ready.poke(true)
           dut.clock.step()
           for (_ <- 0 until 3) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.rspRx.ready.expect(true.B)
             port.datTx.valid.expect(false.B)
             dut.clock.step()
@@ -176,7 +177,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.rspRx.valid.poke(false)
           port.rspRx.bits.dbID.poke(BigInt(0))
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.rspRx.ready.expect(false.B)
             port.datTx.valid.expect(true.B)
             expectData(port.datTx.bits, hn.snId, hn.nodeId, snSlot, value, ChiOpcode.Dat.NonCopyBackWrData)
@@ -186,7 +187,7 @@ class HnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           dut.clock.step()
           // Sending data cannot release the HN before SN confirms the memory write.
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.rspRx.ready.expect(true.B)
             port.reqTx.valid.expect(false.B)
             port.rspTx.valid.expect(false.B)

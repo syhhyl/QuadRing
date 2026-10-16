@@ -71,7 +71,7 @@ class HnRetrySpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
       if (write) expectData(port.datTx.bits, hn.snId, hn.nodeId, dbId, lines.head,
         ChiOpcode.Dat.NonCopyBackWrData)
       else expectData(port.datTx.bits, src, hn.nodeId, txn, lines(2))
-      port.reqRx.ready.expect(false.B)
+      port.reqRx.ready.expect(true.B)
       port.rspTx.valid.expect(false.B)
       port.reqTx.valid.expect(false.B)
       dut.clock.step()
@@ -80,7 +80,7 @@ class HnRetrySpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
     dut.clock.step()
     if (write) {
       for (_ <- 0 until 5) {
-        port.reqRx.ready.expect(false.B) // SN DAT injection still is not write completion.
+        port.reqRx.ready.expect(true.B) // SN DAT injection still is not write completion.
         port.datTx.valid.expect(false.B)
         dut.clock.step()
       }
@@ -102,14 +102,14 @@ class HnRetrySpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
         val address = if (config.chi.addrWidth == 6) BigInt(0) else BigInt(128)
         start(dut, hn, rn, write, txn, address)
         request(port.reqRx.bits, hn.nodeId, 0, 0, 0)
-        port.reqRx.valid.poke(true)
+        port.reqRx.valid.poke(false)
         port.datRx.bits.data.poke(BigInt(0))
         sendRetry(dut, hn, grantFirst)
         for (_ <- 0 until 6) {
           port.reqTx.valid.expect(false.B)
           port.datTx.valid.expect(false.B)
           port.datRx.ready.expect(false.B)
-          port.reqRx.ready.expect(false.B)
+          port.reqRx.ready.expect(true.B)
           port.rspTx.valid.expect(false.B)
           dut.clock.step()
         }
@@ -122,7 +122,7 @@ class HnRetrySpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
             if (write) ChiOpcode.Req.WriteNoSnpFull else ChiOpcode.Req.ReadNoSnp, allowRetry = false)
           port.datRx.ready.expect(false.B)
           port.rspRx.ready.expect(false.B)
-          port.reqRx.ready.expect(false.B)
+          port.reqRx.ready.expect(true.B)
           port.rspTx.valid.expect(false.B)
           dut.clock.step()
         }

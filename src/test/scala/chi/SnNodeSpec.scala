@@ -48,7 +48,7 @@ class SnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           dut.io.datTx.valid.expect(false.B)
           dut.clock.step()
           for (_ <- 0 until 6) {
-            dut.io.reqRx.ready.expect(false.B)
+            dut.io.reqRx.ready.expect(true.B)
             dut.io.datTx.valid.expect(true.B)
             expectData(dut.io.datTx.bits, hn, sn.nodeId, txn, value)
             dut.io.reqTx.valid.expect(false.B)
@@ -134,8 +134,9 @@ class SnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           request(port.reqRx.bits, sn.nodeId, 0, 0, 0)
           writeData(port.datRx.bits, sn.nodeId, hn, 0, value)
           port.datRx.valid.poke(true)
+          port.reqRx.valid.poke(false)
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.datRx.ready.expect(false.B)
             port.datTx.valid.expect(false.B)
             port.rspTx.valid.expect(true.B)
@@ -148,7 +149,7 @@ class SnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.datRx.valid.poke(false)
           // Authorization alone cannot produce a completion.
           for (_ <- 0 until 3) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.datRx.ready.expect(true.B)
             port.rspTx.valid.expect(false.B)
             dut.clock.step()
@@ -161,7 +162,7 @@ class SnNodeSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           port.rspTx.valid.expect(false.B) // Memory has not been updated yet.
           dut.clock.step()
           for (_ <- 0 until 6) {
-            port.reqRx.ready.expect(false.B)
+            port.reqRx.ready.expect(true.B)
             port.datRx.ready.expect(false.B)
             port.rspTx.valid.expect(true.B)
             expectResponse(port.rspTx.bits, hn, sn.nodeId, txn, ChiOpcode.Rsp.Comp)
