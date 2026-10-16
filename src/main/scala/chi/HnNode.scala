@@ -100,7 +100,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     val coherentRead = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
       port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique
     val evict = port.reqRx.bits.opcode === ChiOpcode.Req.Evict
-    when(port.reqRx.fire && (coherentRead || evict)) {
+    val writeBack = port.reqRx.bits.opcode === ChiOpcode.Req.WriteBackFull
+    when(port.reqRx.fire && (coherentRead || evict || writeBack)) {
       // This directory covers a bounded address space; entries are never replaced.
       assert(requestInDirectoryRange, "HN address exceeds directory range")
     }
@@ -148,7 +149,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
             directoryHolderStates(requestDirectoryIndex)(slot) := RnCacheState.I
           }
         }
-      }.otherwise {
+      }.elsewhen(!writeBack) {
         assert(!directoryOccupied, "HN non-coherent access requires an uncached line")
       }
     }
@@ -170,7 +171,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       rrSlot := Mux(grantSlot === (outer.params.retrySlots - 1).U, 0.U, grantSlot + 1.U)
       retryAckSeen := false.B
       creditHeld := false.B
-      retried := true.B
+      // Upstream credit does not count as a retry of the downstream SN request.
+      retried := false.B
       if (outer.params.coherent) {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
@@ -182,8 +184,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       if (outer.params.coherent) {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique ||
-          req.opcode === ChiOpcode.Req.Evict,
-          "HN currently supports only non-coherent reads/writes, coherent reads and Evict")
+          req.opcode === ChiOpcode.Req.Evict || req.opcode === ChiOpcode.Req.WriteBackFull,
+          "HN currently supports only non-coherent reads/writes, coherent reads, Evict and WriteBackFull")
       } else {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
           "HN currently supports only ReadNoSnp and WriteNoSnpFull")
@@ -206,8 +208,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       if (outer.params.coherent) {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique ||
-          req.opcode === ChiOpcode.Req.Evict,
-          "HN currently supports only non-coherent reads/writes, coherent reads and Evict")
+          req.opcode === ChiOpcode.Req.Evict || req.opcode === ChiOpcode.Req.WriteBackFull,
+          "HN currently supports only non-coherent reads/writes, coherent reads, Evict and WriteBackFull")
       } else {
         assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
           "HN currently supports only ReadNoSnp and WriteNoSnpFull")
@@ -239,7 +241,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.reqTx.bits.txnID := downstreamTxnId
   if (outer.params.coherent) {
     port.reqTx.bits.opcode := Mux(request.opcode === ChiOpcode.Req.ReadShared ||
-      request.opcode === ChiOpcode.Req.ReadUnique, ChiOpcode.Req.ReadNoSnp, request.opcode)
+      request.opcode === ChiOpcode.Req.ReadUnique, ChiOpcode.Req.ReadNoSnp,
+      Mux(request.opcode === ChiOpcode.Req.WriteBackFull, ChiOpcode.Req.WriteNoSnpFull, request.opcode))
   }
   port.reqTx.bits.allowRetry := !retryReady
   port.reqTx.bits.pCrdType := 0.U
@@ -300,9 +303,44 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     }.otherwise {
       assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === request.srcID && dat.txnID === dbId,
         "HN received write data for another transaction")
-      assert(dat.opcode === ChiOpcode.Dat.NonCopyBackWrData && dat.resp === ChiResp.I && dat.dbID === 0.U,
-        "HN expects non-coherent NonCopyBackWrData")
-      state := sendSnReq
+      if (outer.params.coherent) {
+        when(request.opcode === ChiOpcode.Req.WriteBackFull) {
+          assert(dat.opcode === ChiOpcode.Dat.CopyBackWrData && dat.dbID === 0.U &&
+            (dat.resp === ChiResp.UD_PD || dat.resp === ChiResp.I),
+            "HN expects CopyBackWrData with dirty data or cancellation")
+          when(dat.resp === ChiResp.UD_PD) {
+            // Use the saved address: the REQ input may already carry another requester.
+            val index = request.addr(6 + directoryIndexWidth - 1, 6)
+            val ownsLine = (0 until 2).map { slot =>
+              directoryHolderValid(index)(slot) &&
+                directoryHolderIds(index)(slot) === request.srcID &&
+                directoryHolderStates(index)(slot) === RnCacheState.UC
+            }.reduce(_ || _)
+            val otherHolder = (0 until 2).map { slot =>
+              directoryHolderValid(index)(slot) && directoryHolderIds(index)(slot) =/= request.srcID
+            }.reduce(_ || _)
+            assert(ownsLine && !otherHolder, "HN dirty writeback requires the unique holder")
+            for (slot <- 0 until 2) {
+              when(directoryHolderValid(index)(slot) && directoryHolderIds(index)(slot) === request.srcID) {
+                directoryHolderValid(index)(slot) := false.B
+                directoryHolderStates(index)(slot) := RnCacheState.I
+              }
+            }
+            state := sendSnReq
+          }.otherwise {
+            // A snoop already transferred responsibility; discard the cancelled writeback.
+            state := idle
+          }
+        }.otherwise {
+          assert(dat.opcode === ChiOpcode.Dat.NonCopyBackWrData && dat.resp === ChiResp.I && dat.dbID === 0.U,
+            "HN expects non-coherent NonCopyBackWrData")
+          state := sendSnReq
+        }
+      } else {
+        assert(dat.opcode === ChiOpcode.Dat.NonCopyBackWrData && dat.resp === ChiResp.I && dat.dbID === 0.U,
+          "HN expects non-coherent NonCopyBackWrData")
+        state := sendSnReq
+      }
     }
     data := dat.data
   }
