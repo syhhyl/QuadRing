@@ -41,6 +41,7 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   private val result = Reg(new RnResponse(params))
   private val requestOpcode = RegInit(ChiOpcode.Req.ReadNoSnp)
   private val writeDbId = Reg(UInt(params.txnIdWidth.W))
+  private val completionDbId = Reg(UInt(params.txnIdWidth.W))
   private val cacheValid = RegInit(VecInit(Seq.fill(outer.params.cacheLines)(false.B)))
   private val cacheTags = Reg(Vec(outer.params.cacheLines, UInt(cacheTagWidth.W)))
   private val cacheStates = RegInit(VecInit(Seq.fill(outer.params.cacheLines)(RnCacheState.I)))
@@ -84,6 +85,9 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
         result.data := 0.U
         state := returnResult
       }.otherwise {
+        assert(!cacheValid(localCacheIndex) ||
+          cacheStates(localCacheIndex) === RnCacheState.I || localCacheHit,
+          "RN cache replacement requires Evict or WriteBackFull")
         request := io.request.bits
         requestOpcode := Mux(io.request.bits.write, ChiOpcode.Req.ReadUnique,
           ChiOpcode.Req.ReadShared)
@@ -131,9 +135,12 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
     if (outer.params.coherent) {
       assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === outer.params.hnId.U &&
         dat.txnID === request.txnID, "RN received data for another transaction")
-      assert(dat.opcode === ChiOpcode.Dat.CompData && dat.dbID === 0.U &&
+      assert(dat.opcode === ChiOpcode.Dat.CompData &&
         (dat.resp === ChiResp.SC || dat.resp === ChiResp.UC),
         "RN expects coherent CompData")
+      assert(!request.write || dat.resp === ChiResp.UC,
+        "RN ReadUnique requires unique permission")
+      completionDbId := dat.dbID
       cacheValid(requestCacheIndex) := true.B
       cacheTags(requestCacheIndex) := requestCacheTag
       when(request.write) {
@@ -211,7 +218,7 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   port.rspTx.bits := 0.U.asTypeOf(port.rspTx.bits)
   port.rspTx.bits.tgtID := outer.params.hnId.U
   port.rspTx.bits.srcID := outer.params.nodeId.U
-  port.rspTx.bits.txnID := request.txnID
+  port.rspTx.bits.txnID := completionDbId
   port.rspTx.bits.opcode := ChiOpcode.Rsp.CompAck
   port.rspTx.bits.resp := ChiResp.I
   when(port.rspTx.fire) {

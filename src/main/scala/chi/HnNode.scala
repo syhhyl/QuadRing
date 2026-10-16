@@ -27,11 +27,9 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     "SN target does not fit the negotiated node ID width")
 
   private val directoryIndexWidth = if (outer.params.coherent) log2Ceil(outer.params.directoryLines) else 1
-  private val directoryTagWidth = if (outer.params.coherent) {
-    params.addrWidth - 6 - directoryIndexWidth
-  } else 1
   if (outer.params.coherent) {
-    require(directoryTagWidth > 0, "HN directory must leave at least one tag bit")
+    require(params.addrWidth >= 6 + directoryIndexWidth,
+      "HN directory must fit the negotiated address width")
   }
 
   val (idle :: sendSnReq :: waitSnData :: sendRnData :: sendRnRsp ::
@@ -41,8 +39,6 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val request = Reg(new ReqFlit(params))
   private val data = Reg(UInt(512.W))
   private val completionResp = RegInit(ChiResp.I)
-  private val directoryValid = RegInit(VecInit(Seq.fill(outer.params.directoryLines)(false.B)))
-  private val directoryTags = Reg(Vec(outer.params.directoryLines, UInt(directoryTagWidth.W)))
   private val directoryHolderValid = RegInit(VecInit(Seq.fill(outer.params.directoryLines) {
     VecInit(Seq.fill(2)(false.B))
   }))
@@ -89,72 +85,62 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val requestDirectoryIndex: UInt = if (outer.params.coherent) {
     port.reqRx.bits.addr(6 + directoryIndexWidth - 1, 6)
   } else 0.U(directoryIndexWidth.W)
-  private val requestDirectoryTag: UInt = if (outer.params.coherent) {
-    port.reqRx.bits.addr(params.addrWidth - 1, 6 + directoryIndexWidth)
-  } else 0.U(directoryTagWidth.W)
-  private val directoryMatch = directoryValid(requestDirectoryIndex) &&
-    directoryTags(requestDirectoryIndex) === requestDirectoryTag
+  private val requestInDirectoryRange = (port.reqRx.bits.addr >> 6) < outer.params.directoryLines.U
+  private val directoryOccupied = requestInDirectoryRange &&
+    directoryHolderValid(requestDirectoryIndex).asUInt.orR
   private val requestHolder0 = directoryHolderValid(requestDirectoryIndex)(0) &&
     directoryHolderIds(requestDirectoryIndex)(0) === port.reqRx.bits.srcID
   private val requestHolder1 = directoryHolderValid(requestDirectoryIndex)(1) &&
     directoryHolderIds(requestDirectoryIndex)(1) === port.reqRx.bits.srcID
   private val requestHasHolder = requestHolder0 || requestHolder1
-  private val requestHasOtherHolder = directoryMatch &&
+  private val requestHasOtherHolder =
     ((directoryHolderValid(requestDirectoryIndex)(0) && !requestHolder0) ||
       (directoryHolderValid(requestDirectoryIndex)(1) && !requestHolder1))
-  private val requestDirectoryResp = WireDefault(ChiResp.UC)
-  when(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared &&
-    directoryMatch && requestHasOtherHolder) {
-    requestDirectoryResp := ChiResp.SC
-  }.elsewhen(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && requestHasHolder) {
-    requestDirectoryResp := Mux(requestHolder0,
-      Mux(directoryHolderStates(requestDirectoryIndex)(0) === RnCacheState.SC,
-        ChiResp.SC, ChiResp.UC),
-      Mux(directoryHolderStates(requestDirectoryIndex)(1) === RnCacheState.SC,
-        ChiResp.SC, ChiResp.UC))
-  }
-
   if (outer.params.coherent) {
-    when(port.reqRx.fire && (state === idle || state === waitRetryReq) &&
-      (port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
-        port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique)) {
-      completionResp := Mux(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared,
-        requestDirectoryResp, ChiResp.UC)
-      when(!directoryMatch) {
-        directoryValid(requestDirectoryIndex) := true.B
-        directoryTags(requestDirectoryIndex) := requestDirectoryTag
-        directoryHolderValid(requestDirectoryIndex)(0) := true.B
-        directoryHolderIds(requestDirectoryIndex)(0) := port.reqRx.bits.srcID
-        directoryHolderStates(requestDirectoryIndex)(0) := Mux(
-          port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared,
-          RnCacheState.UC, RnCacheState.UC)
-        directoryHolderValid(requestDirectoryIndex)(1) := false.B
-      }.elsewhen(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared) {
-        when(!requestHasHolder && !directoryHolderValid(requestDirectoryIndex)(0)) {
+    val coherentRead = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
+      port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique
+    when(port.reqRx.fire && coherentRead) {
+      // This directory covers a bounded address space; entries are never replaced.
+      assert(requestInDirectoryRange, "HN address exceeds directory range")
+    }
+    when(port.reqRx.fire && (state === idle || state === waitRetryReq)) {
+      when(coherentRead) {
+        val otherUnique = (0 until 2).map { slot =>
+          directoryHolderValid(requestDirectoryIndex)(slot) &&
+            directoryHolderIds(requestDirectoryIndex)(slot) =/= port.reqRx.bits.srcID &&
+            directoryHolderStates(requestDirectoryIndex)(slot) === RnCacheState.UC
+        }.reduce(_ || _)
+        val requesterUnique = (0 until 2).map { slot =>
+          directoryHolderValid(requestDirectoryIndex)(slot) &&
+            directoryHolderIds(requestDirectoryIndex)(slot) === port.reqRx.bits.srcID &&
+            directoryHolderStates(requestDirectoryIndex)(slot) === RnCacheState.UC
+        }.reduce(_ || _)
+        assert(!requesterUnique, "HN requester already holds unique permission")
+        assert(!otherUnique && !(port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique &&
+          requestHasOtherHolder), "HN coherent read requires snoop for another holder")
+        assert(requestHasHolder || !directoryHolderValid(requestDirectoryIndex).asUInt.andR,
+          "HN directory has no free holder slot")
+
+        val shared = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && directoryOccupied
+        completionResp := Mux(shared, ChiResp.SC, ChiResp.UC)
+        when(!directoryOccupied) {
           directoryHolderValid(requestDirectoryIndex)(0) := true.B
           directoryHolderIds(requestDirectoryIndex)(0) := port.reqRx.bits.srcID
-          directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.SC
-          when(directoryHolderValid(requestDirectoryIndex)(1)) {
-            directoryHolderStates(requestDirectoryIndex)(1) := RnCacheState.SC
-          }
-        }.elsewhen(!requestHasHolder && !directoryHolderValid(requestDirectoryIndex)(1)) {
-          directoryHolderValid(requestDirectoryIndex)(1) := true.B
-          directoryHolderIds(requestDirectoryIndex)(1) := port.reqRx.bits.srcID
-          directoryHolderStates(requestDirectoryIndex)(1) := RnCacheState.SC
-          when(directoryHolderValid(requestDirectoryIndex)(0)) {
-            directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.SC
-          }
-        }
-      }.otherwise {
-        when(requestHasHolder && !requestHasOtherHolder) {
+          directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.UC
+        }.elsewhen(requestHasHolder) {
           when(requestHolder0) {
-            directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.UC
+            directoryHolderStates(requestDirectoryIndex)(0) := Mux(shared, RnCacheState.SC, RnCacheState.UC)
           }.otherwise {
-            directoryHolderStates(requestDirectoryIndex)(1) := RnCacheState.UC
+            directoryHolderStates(requestDirectoryIndex)(1) := Mux(shared, RnCacheState.SC, RnCacheState.UC)
           }
         }.otherwise {
-          assert(false.B, "HN ReadUnique requires snoop for another holder")
+          val slot = Mux(directoryHolderValid(requestDirectoryIndex)(0), 1.U, 0.U)
+          directoryHolderValid(requestDirectoryIndex)(slot) := true.B
+          directoryHolderIds(requestDirectoryIndex)(slot) := port.reqRx.bits.srcID
+          directoryHolderStates(requestDirectoryIndex)(slot) := RnCacheState.SC
         }
+      }.otherwise {
+        assert(!directoryOccupied, "HN non-coherent access requires an uncached line")
       }
     }
   }
@@ -309,7 +295,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     val rsp = port.rspRx.bits
     when(state === waitRnCompAck) {
       assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === request.srcID &&
-        rsp.txnID === request.txnID && rsp.opcode === ChiOpcode.Rsp.CompAck &&
+        rsp.txnID === dbId && rsp.opcode === ChiOpcode.Rsp.CompAck &&
         rsp.resp === ChiResp.I && rsp.dbID === 0.U && rsp.pCrdType === 0.U,
         "HN expects matching RN CompAck")
       state := idle
