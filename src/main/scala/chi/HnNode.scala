@@ -6,9 +6,12 @@ import org.chipsalliance.cde.config.Parameters
 import org.chipsalliance.diplomacy.lazymodule._
 import org.chipsalliance.diplomacy.nodes._
 
-case class HnParams(nodeId: Int = 1, snId: Int = 3, retrySlots: Int = 2) {
+case class HnParams(nodeId: Int = 1, snId: Int = 3, retrySlots: Int = 2,
+  coherent: Boolean = false, directoryLines: Int = 64) {
   require(nodeId >= 0 && snId >= 0, "HN and SN node IDs must be nonnegative")
   require(retrySlots > 0, "HN must have at least one retry slot")
+  require(directoryLines >= 2 && (directoryLines & (directoryLines - 1)) == 0,
+    "HN directoryLines must be a power of two greater than one")
 }
 
 /** One upstream transaction; retain its identity while issuing a downstream request. */
@@ -23,11 +26,31 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   require(BigInt(outer.params.snId) < (BigInt(1) << params.nodeIdWidth),
     "SN target does not fit the negotiated node ID width")
 
+  private val directoryIndexWidth = if (outer.params.coherent) log2Ceil(outer.params.directoryLines) else 1
+  private val directoryTagWidth = if (outer.params.coherent) {
+    params.addrWidth - 6 - directoryIndexWidth
+  } else 1
+  if (outer.params.coherent) {
+    require(directoryTagWidth > 0, "HN directory must leave at least one tag bit")
+  }
+
   val (idle :: sendSnReq :: waitSnData :: sendRnData :: sendRnRsp ::
-    waitRnData :: waitSnDbId :: sendSnData :: waitSnComp :: sendGrant :: waitRetryReq :: Nil) = Enum(11)
+    waitRnData :: waitSnDbId :: sendSnData :: waitSnComp :: sendGrant :: waitRetryReq ::
+    waitRnCompAck :: Nil) = Enum(12)
   val state = RegInit(idle)
   private val request = Reg(new ReqFlit(params))
   private val data = Reg(UInt(512.W))
+  private val completionResp = RegInit(ChiResp.I)
+  private val directoryValid = RegInit(VecInit(Seq.fill(outer.params.directoryLines)(false.B)))
+  private val directoryTags = Reg(Vec(outer.params.directoryLines, UInt(directoryTagWidth.W)))
+  private val directoryHolderValid = RegInit(VecInit(Seq.fill(outer.params.directoryLines) {
+    VecInit(Seq.fill(2)(false.B))
+  }))
+  private val directoryHolderIds = Reg(Vec(outer.params.directoryLines,
+    Vec(2, UInt(params.nodeIdWidth.W))))
+  private val directoryHolderStates = RegInit(VecInit(Seq.fill(outer.params.directoryLines) {
+    VecInit(Seq.fill(2)(RnCacheState.I))
+  }))
   // One downstream request is active, so its ID can remain zero.
   private val downstreamTxnId = 0.U(params.txnIdWidth.W)
   private val dbId = 0.U(params.txnIdWidth.W)
@@ -63,6 +86,79 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     selected
   }
 
+  private val requestDirectoryIndex: UInt = if (outer.params.coherent) {
+    port.reqRx.bits.addr(6 + directoryIndexWidth - 1, 6)
+  } else 0.U(directoryIndexWidth.W)
+  private val requestDirectoryTag: UInt = if (outer.params.coherent) {
+    port.reqRx.bits.addr(params.addrWidth - 1, 6 + directoryIndexWidth)
+  } else 0.U(directoryTagWidth.W)
+  private val directoryMatch = directoryValid(requestDirectoryIndex) &&
+    directoryTags(requestDirectoryIndex) === requestDirectoryTag
+  private val requestHolder0 = directoryHolderValid(requestDirectoryIndex)(0) &&
+    directoryHolderIds(requestDirectoryIndex)(0) === port.reqRx.bits.srcID
+  private val requestHolder1 = directoryHolderValid(requestDirectoryIndex)(1) &&
+    directoryHolderIds(requestDirectoryIndex)(1) === port.reqRx.bits.srcID
+  private val requestHasHolder = requestHolder0 || requestHolder1
+  private val requestHasOtherHolder = directoryMatch &&
+    ((directoryHolderValid(requestDirectoryIndex)(0) && !requestHolder0) ||
+      (directoryHolderValid(requestDirectoryIndex)(1) && !requestHolder1))
+  private val requestDirectoryResp = WireDefault(ChiResp.UC)
+  when(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared &&
+    directoryMatch && requestHasOtherHolder) {
+    requestDirectoryResp := ChiResp.SC
+  }.elsewhen(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && requestHasHolder) {
+    requestDirectoryResp := Mux(requestHolder0,
+      Mux(directoryHolderStates(requestDirectoryIndex)(0) === RnCacheState.SC,
+        ChiResp.SC, ChiResp.UC),
+      Mux(directoryHolderStates(requestDirectoryIndex)(1) === RnCacheState.SC,
+        ChiResp.SC, ChiResp.UC))
+  }
+
+  if (outer.params.coherent) {
+    when(port.reqRx.fire && (state === idle || state === waitRetryReq) &&
+      (port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
+        port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique)) {
+      completionResp := Mux(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared,
+        requestDirectoryResp, ChiResp.UC)
+      when(!directoryMatch) {
+        directoryValid(requestDirectoryIndex) := true.B
+        directoryTags(requestDirectoryIndex) := requestDirectoryTag
+        directoryHolderValid(requestDirectoryIndex)(0) := true.B
+        directoryHolderIds(requestDirectoryIndex)(0) := port.reqRx.bits.srcID
+        directoryHolderStates(requestDirectoryIndex)(0) := Mux(
+          port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared,
+          RnCacheState.UC, RnCacheState.UC)
+        directoryHolderValid(requestDirectoryIndex)(1) := false.B
+      }.elsewhen(port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared) {
+        when(!requestHasHolder && !directoryHolderValid(requestDirectoryIndex)(0)) {
+          directoryHolderValid(requestDirectoryIndex)(0) := true.B
+          directoryHolderIds(requestDirectoryIndex)(0) := port.reqRx.bits.srcID
+          directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.SC
+          when(directoryHolderValid(requestDirectoryIndex)(1)) {
+            directoryHolderStates(requestDirectoryIndex)(1) := RnCacheState.SC
+          }
+        }.elsewhen(!requestHasHolder && !directoryHolderValid(requestDirectoryIndex)(1)) {
+          directoryHolderValid(requestDirectoryIndex)(1) := true.B
+          directoryHolderIds(requestDirectoryIndex)(1) := port.reqRx.bits.srcID
+          directoryHolderStates(requestDirectoryIndex)(1) := RnCacheState.SC
+          when(directoryHolderValid(requestDirectoryIndex)(0)) {
+            directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.SC
+          }
+        }
+      }.otherwise {
+        when(requestHasHolder && !requestHasOtherHolder) {
+          when(requestHolder0) {
+            directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.UC
+          }.otherwise {
+            directoryHolderStates(requestDirectoryIndex)(1) := RnCacheState.UC
+          }
+        }.otherwise {
+          assert(false.B, "HN ReadUnique requires snoop for another holder")
+        }
+      }
+    }
+  }
+
   port.reqRx.ready := (state === idle && !hasRetryWaiting) ||
     (activeState && retrySlotFree && !retryAckPending) ||
     state === waitRetryReq
@@ -80,10 +176,22 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       retryAckSeen := false.B
       creditHeld := false.B
       retried := true.B
-      state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+      if (outer.params.coherent) {
+        state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
+          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
+          sendSnReq, sendRnRsp)
+      } else {
+        state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+      }
     }.elsewhen(state === idle) {
-      assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
-        "HN currently supports only ReadNoSnp and WriteNoSnpFull")
+      if (outer.params.coherent) {
+        assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull ||
+          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
+          "HN currently supports only non-coherent reads/writes and coherent reads")
+      } else {
+        assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
+          "HN currently supports only ReadNoSnp and WriteNoSnpFull")
+      }
       assert(req.tgtID === outer.params.nodeId.U, "REQ target must be this HN")
       assert(req.addr(5, 0) === 0.U, "HN requires line-aligned addresses")
       assert(req.allowRetry && req.pCrdType === 0.U, "HN currently accepts only first attempts")
@@ -91,10 +199,22 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       retryAckSeen := false.B
       creditHeld := false.B
       retried := false.B
-      state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+      if (outer.params.coherent) {
+        state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
+          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
+          sendSnReq, sendRnRsp)
+      } else {
+        state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
+      }
     }.otherwise {
-      assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
-        "HN currently supports only ReadNoSnp and WriteNoSnpFull")
+      if (outer.params.coherent) {
+        assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull ||
+          req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
+          "HN currently supports only non-coherent reads/writes and coherent reads")
+      } else {
+        assert(req.opcode === ChiOpcode.Req.ReadNoSnp || req.opcode === ChiOpcode.Req.WriteNoSnpFull,
+          "HN currently supports only ReadNoSnp and WriteNoSnpFull")
+      }
       assert(req.tgtID === outer.params.nodeId.U && req.addr(5, 0) === 0.U &&
         req.allowRetry && req.pCrdType === 0.U,
         "HN expects a retryable first attempt")
@@ -120,6 +240,10 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.reqTx.bits.tgtID := outer.params.snId.U
   port.reqTx.bits.srcID := outer.params.nodeId.U
   port.reqTx.bits.txnID := downstreamTxnId
+  if (outer.params.coherent) {
+    port.reqTx.bits.opcode := Mux(request.opcode === ChiOpcode.Req.ReadShared ||
+      request.opcode === ChiOpcode.Req.ReadUnique, ChiOpcode.Req.ReadNoSnp, request.opcode)
+  }
   port.reqTx.bits.allowRetry := !retryReady
   port.reqTx.bits.pCrdType := 0.U
   when(port.reqTx.fire) {
@@ -128,7 +252,13 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       creditHeld := false.B
       retried := true.B
     }
-    state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp, waitSnData, waitSnDbId)
+    if (outer.params.coherent) {
+      state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp ||
+        request.opcode === ChiOpcode.Req.ReadShared || request.opcode === ChiOpcode.Req.ReadUnique,
+        waitSnData, waitSnDbId)
+    } else {
+      state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp, waitSnData, waitSnDbId)
+    }
   }
 
   port.rspTx.valid := retryAckPending || state === sendRnRsp || state === sendGrant
@@ -173,13 +303,21 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     data := dat.data
   }
 
-  port.rspRx.ready := (waitingForSnReply && !retryReady) || state === waitSnComp
+  port.rspRx.ready := (waitingForSnReply && !retryReady) || state === waitSnComp ||
+    state === waitRnCompAck
   when(port.rspRx.fire) {
     val rsp = port.rspRx.bits
-    assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === outer.params.snId.U,
-      "HN received a response for another transaction")
-    assert(rsp.resp === ChiResp.I && rsp.pCrdType === 0.U, "HN expects non-coherent SN responses")
-    when(rsp.opcode === ChiOpcode.Rsp.RetryAck || rsp.opcode === ChiOpcode.Rsp.PCrdGrant) {
+    when(state === waitRnCompAck) {
+      assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === request.srcID &&
+        rsp.txnID === request.txnID && rsp.opcode === ChiOpcode.Rsp.CompAck &&
+        rsp.resp === ChiResp.I && rsp.dbID === 0.U && rsp.pCrdType === 0.U,
+        "HN expects matching RN CompAck")
+      state := idle
+    }.otherwise {
+      assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === outer.params.snId.U,
+        "HN received a response for another transaction")
+      assert(rsp.resp === ChiResp.I && rsp.pCrdType === 0.U, "HN expects non-coherent SN responses")
+      when(rsp.opcode === ChiOpcode.Rsp.RetryAck || rsp.opcode === ChiOpcode.Rsp.PCrdGrant) {
       assert(waitingForSnReply && !retried, "HN cannot retry an already accepted SN request")
       when(rsp.opcode === ChiOpcode.Rsp.RetryAck) {
         assert(rsp.txnID === downstreamTxnId, "HN received RetryAck for another transaction")
@@ -191,17 +329,19 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
         assert(!creditHeld, "HN received duplicate PCrdGrant")
         creditHeld := true.B
       }
-    }.otherwise {
-      assert(rsp.txnID === downstreamTxnId, "HN received a response for another transaction")
-      assert(!retryAckSeen && !creditHeld, "HN cannot complete a request awaiting retry")
-      when(state === waitSnDbId) {
-        assert(rsp.opcode === ChiOpcode.Rsp.DBIDResp, "HN expects SN DBIDResp")
-        snDbId := rsp.dbID
-        state := sendSnData
       }.otherwise {
-        assert(state === waitSnComp && rsp.opcode === ChiOpcode.Rsp.Comp, "HN expects SN write completion")
-        assert(rsp.dbID === snDbId, "HN received completion for another data slot")
-        state := idle
+        assert(rsp.txnID === downstreamTxnId, "HN received a response for another transaction")
+        assert(!retryAckSeen && !creditHeld, "HN cannot complete a request awaiting retry")
+        when(state === waitSnDbId) {
+          assert(rsp.opcode === ChiOpcode.Rsp.DBIDResp, "HN expects SN DBIDResp")
+          snDbId := rsp.dbID
+          state := sendSnData
+        }.otherwise {
+          assert(state === waitSnComp && rsp.opcode === ChiOpcode.Rsp.Comp,
+            "HN expects SN write completion")
+          assert(rsp.dbID === snDbId, "HN received completion for another data slot")
+          state := idle
+        }
       }
     }
   }
@@ -213,10 +353,20 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.datTx.bits.srcID := outer.params.nodeId.U
   port.datTx.bits.txnID := Mux(state === sendSnData, snDbId, request.txnID)
   port.datTx.bits.opcode := Mux(state === sendSnData, ChiOpcode.Dat.NonCopyBackWrData, ChiOpcode.Dat.CompData)
-  port.datTx.bits.resp := ChiResp.I
+  port.datTx.bits.resp := (if (outer.params.coherent) {
+    Mux(request.opcode === ChiOpcode.Req.ReadShared ||
+      request.opcode === ChiOpcode.Req.ReadUnique, completionResp, ChiResp.I)
+  } else ChiResp.I)
   port.datTx.bits.data := data
   when(port.datTx.fire) {
-    state := Mux(state === sendRnData, idle, waitSnComp)
+    if (outer.params.coherent) {
+      state := Mux(state === sendRnData &&
+        (request.opcode === ChiOpcode.Req.ReadShared ||
+          request.opcode === ChiOpcode.Req.ReadUnique), waitRnCompAck,
+        Mux(state === sendRnData, idle, waitSnComp))
+    } else {
+      state := Mux(state === sendRnData, idle, waitSnComp)
+    }
   }
 
   port.snpTx.valid := false.B
