@@ -9,14 +9,13 @@ handle backpressure and reserve space for forwarding.
 
 CHI subset payloads (REQ, RSP, SNP, DAT) connect through Diplomacy. Endpoint node IDs
 map to ring positions; DAT carries a complete 512-bit line. RN0 and RN1 accept local
-non-coherent line reads and writes. HN forwards reads and whole-line writes to SN,
-preserves upstream request IDs, and waits for SN write completion. SN supports
-initialized whole-line reads and writes, with separate write authorization and
-completion. Each endpoint handles one active transaction. RN and HN can retry
-rejected requests after RetryAck and PCrdGrant. HN keeps two waiting request
-slots and SN keeps one; both consume busy retryable requests, grant saved
-requests after the active transaction, and accept only matching credited
-retries. Caches and snoops are pending.
+line reads and writes. `ChiSystemParams(coherent = true)` enables RN caches
+(I/SC/UC/UD), an HN directory, shared reads, unique ownership transfers, and
+clean/dirty replacement. Cache and directory sizes are configurable; the directory
+must cover SN memory. The default mode uses non-coherent reads and writes.
+HN preserves request IDs and waits for SN write completion. Each endpoint handles
+one active transaction. RetryAck and PCrdGrant support retries; snoops can cancel
+a pending dirty writeback. SN provides initialized storage for complete lines.
 
 Each channel uses this topology in the four-node configuration:
 
@@ -55,5 +54,6 @@ git submodule update --init --recursive
 Compiles sources, runs tests, and emits SystemVerilog to `generated/`.
 Random tests run 5,000 cycles per seed; use `./test.sh --long` for 100,000. CI runs the long mode.
 Emits a 32-bit single ring to `generated/ring/` and the four-channel CHI transport
-to `generated/chi/`. The assembled endpoint system is emitted to `generated/system/`.
+to `generated/chi/`. Endpoint systems are emitted to `generated/system/`
+(non-coherent) and `generated/system-coherent/` (coherent).
 Each output has its own `filelist.f`, with four nodes and three buffer entries per node.
