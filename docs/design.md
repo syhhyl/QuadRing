@@ -287,3 +287,6 @@ direct memory transfer, forwarded snoops, error recovery, and the CHI link layer
 Accepted messages are checked with assertions. Reset empties the network, clears caches,
 directory and retry state, and restores SN's configured initial contents; dirty
 cache data is not preserved across reset.
+
+See the [completion report](report.md) for delivered capabilities, recorded
+regression results, and reproduction commands.
