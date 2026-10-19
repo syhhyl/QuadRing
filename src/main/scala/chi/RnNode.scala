@@ -42,6 +42,7 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   private val requestOpcode = RegInit(ChiOpcode.Req.ReadNoSnp)
   private val victimAddress = Reg(UInt(params.addrWidth.W))
   private val victimData = Reg(UInt(512.W))
+  private val victimDirty = RegInit(false.B)
   private val writeDbId = Reg(UInt(params.txnIdWidth.W))
   private val completionDbId = Reg(UInt(params.txnIdWidth.W))
   private val cacheValid = RegInit(VecInit(Seq.fill(outer.params.cacheLines)(false.B)))
@@ -53,6 +54,8 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   private val retried = RegInit(false.B)
   private val waitingForReply = state === waitData || state === waitDbId || state === waitComp
   private val retryReady = retryAckSeen && creditHeld
+  private val mainDatTx = Wire(Decoupled(new DatFlit(params)))
+  private val mainRspTx = Wire(Decoupled(new RspFlit(params)))
 
   private val localCacheIndex: UInt = if (outer.params.coherent) {
     io.request.bits.addr(6 + cacheIndexWidth - 1, 6)
@@ -79,7 +82,7 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
     state := sendReq
   }
 
-  io.request.ready := state === idle
+  io.request.ready := state === idle && (if (outer.params.coherent) !port.snpRx.valid else true.B)
   when(io.request.fire) {
     assert(io.request.bits.addr(5, 0) === 0.U, "RN requires line-aligned addresses")
     if (outer.params.coherent) {
@@ -104,6 +107,7 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
         when(replace) {
           victimAddress := Cat(cacheTags(localCacheIndex), localCacheIndex, 0.U(6.W))
           victimData := cacheData(localCacheIndex)
+          victimDirty := cacheStates(localCacheIndex) === RnCacheState.UD
           requestOpcode := Mux(cacheStates(localCacheIndex) === RnCacheState.UD,
             ChiOpcode.Req.WriteBackFull, ChiOpcode.Req.Evict)
           // Move the victim out of the cache; retain dirty data through retries and DAT backpressure.
@@ -153,16 +157,17 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   }
 
   // RSP takes priority if data and a retry response arrive together.
-  port.datRx.ready := state === waitData && !retryAckSeen && !creditHeld && !port.rspRx.valid
+  port.datRx.ready := state === waitData && !retryAckSeen && !creditHeld && !port.rspRx.valid &&
+    (if (outer.params.coherent) !port.snpRx.valid else true.B)
   when(port.datRx.fire) {
     val dat = port.datRx.bits
     if (outer.params.coherent) {
       assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === outer.params.hnId.U &&
         dat.txnID === request.txnID, "RN received data for another transaction")
       assert(dat.opcode === ChiOpcode.Dat.CompData &&
-        (dat.resp === ChiResp.SC || dat.resp === ChiResp.UC),
+        (dat.resp === ChiResp.SC || dat.resp === ChiResp.UC || dat.resp === ChiResp.UD_PD),
         "RN expects coherent CompData")
-      assert(!request.write || dat.resp === ChiResp.UC,
+      assert(!request.write || dat.resp === ChiResp.UC || dat.resp === ChiResp.UD_PD,
         "RN ReadUnique requires unique permission")
       completionDbId := dat.dbID
       cacheValid(requestCacheIndex) := true.B
@@ -173,8 +178,8 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
         result.data := 0.U
       }.otherwise {
         cacheData(requestCacheIndex) := dat.data
-        cacheStates(requestCacheIndex) := Mux(dat.resp === ChiResp.SC,
-          RnCacheState.SC, RnCacheState.UC)
+        cacheStates(requestCacheIndex) := Mux(dat.resp === ChiResp.UD_PD, RnCacheState.UD,
+          Mux(dat.resp === ChiResp.SC, RnCacheState.SC, RnCacheState.UC))
         result.data := dat.data
       }
       result.txnID := request.txnID
@@ -237,21 +242,22 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   }
   when(waitingForReply && retryReady) { state := sendReq }
 
-  port.datTx.valid := state === sendWriteData
-  port.datTx.bits := 0.U.asTypeOf(port.datTx.bits)
-  port.datTx.bits.tgtID := outer.params.hnId.U
-  port.datTx.bits.srcID := outer.params.nodeId.U
-  port.datTx.bits.txnID := writeDbId
-  port.datTx.bits.opcode := ChiOpcode.Dat.NonCopyBackWrData
-  port.datTx.bits.resp := ChiResp.I
-  port.datTx.bits.data := request.data
+  mainDatTx.valid := state === sendWriteData
+  mainDatTx.bits := 0.U.asTypeOf(mainDatTx.bits)
+  mainDatTx.bits.tgtID := outer.params.hnId.U
+  mainDatTx.bits.srcID := outer.params.nodeId.U
+  mainDatTx.bits.txnID := writeDbId
+  mainDatTx.bits.opcode := ChiOpcode.Dat.NonCopyBackWrData
+  mainDatTx.bits.resp := ChiResp.I
+  mainDatTx.bits.data := request.data
   if (outer.params.coherent) {
-    port.datTx.bits.opcode := ChiOpcode.Dat.CopyBackWrData
-    port.datTx.bits.resp := ChiResp.UD_PD
-    port.datTx.bits.data := victimData
+    mainDatTx.bits.opcode := ChiOpcode.Dat.CopyBackWrData
+    mainDatTx.bits.resp := Mux(victimDirty, ChiResp.UD_PD, ChiResp.I)
+    mainDatTx.bits.data := Mux(victimDirty, victimData, 0.U)
   }
-  when(port.datTx.fire) {
+  when(mainDatTx.fire) {
     if (outer.params.coherent) {
+      victimDirty := false.B
       resumeRequest()
     } else {
       result.txnID := request.txnID
@@ -260,14 +266,14 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
     }
   }
 
-  port.rspTx.valid := (if (outer.params.coherent) state === sendCompAck else false.B)
-  port.rspTx.bits := 0.U.asTypeOf(port.rspTx.bits)
-  port.rspTx.bits.tgtID := outer.params.hnId.U
-  port.rspTx.bits.srcID := outer.params.nodeId.U
-  port.rspTx.bits.txnID := completionDbId
-  port.rspTx.bits.opcode := ChiOpcode.Rsp.CompAck
-  port.rspTx.bits.resp := ChiResp.I
-  when(port.rspTx.fire) {
+  mainRspTx.valid := (if (outer.params.coherent) state === sendCompAck else false.B)
+  mainRspTx.bits := 0.U.asTypeOf(mainRspTx.bits)
+  mainRspTx.bits.tgtID := outer.params.hnId.U
+  mainRspTx.bits.srcID := outer.params.nodeId.U
+  mainRspTx.bits.txnID := completionDbId
+  mainRspTx.bits.opcode := ChiOpcode.Rsp.CompAck
+  mainRspTx.bits.resp := ChiResp.I
+  when(mainRspTx.fire) {
     state := returnResult
   }
 
@@ -275,8 +281,85 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   io.response.bits := result
   when(io.response.fire) { state := idle }
 
+  if (outer.params.coherent) {
+    val snoopPending = RegInit(false.B)
+    val snoopHasData = Reg(Bool())
+    val snoopTxnId = Reg(UInt(params.txnIdWidth.W))
+    val snoopResp = Reg(UInt(3.W))
+    val snoopData = Reg(UInt(512.W))
+    val snp = port.snpRx.bits
+    val index = snp.addr(6 + cacheIndexWidth - 1, 6)
+    val tag = snp.addr(params.addrWidth - 1, 6 + cacheIndexWidth)
+    val cacheHit = cacheValid(index) && cacheStates(index) =/= RnCacheState.I && cacheTags(index) === tag
+    val victimHit = victimDirty && requestOpcode === ChiOpcode.Req.WriteBackFull &&
+      victimAddress === snp.addr
+
+    port.snpRx.ready := !snoopPending
+    when(port.snpRx.fire) {
+      assert(snp.srcID === outer.params.hnId.U, "RN expects snoops from its HN")
+      assert(snp.addr(5, 0) === 0.U, "RN requires line-aligned snoops")
+      assert(snp.opcode === ChiOpcode.Snp.SnpShared || snp.opcode === ChiOpcode.Snp.SnpUnique,
+        "RN supports only SnpShared and SnpUnique")
+      assert(!victimHit || state =/= sendWriteData, "RN cannot snoop an authorized writeback")
+      val unique = snp.opcode === ChiOpcode.Snp.SnpUnique
+      val dirty = cacheHit && cacheStates(index) === RnCacheState.UD
+      snoopPending := true.B
+      snoopTxnId := snp.txnID
+      snoopHasData := victimHit || dirty
+      snoopData := Mux(victimHit, victimData, cacheData(index))
+      snoopResp := Mux(victimHit, ChiResp.I_PD,
+        Mux(dirty, Mux(unique, ChiResp.I_PD, ChiResp.SC_PD),
+          Mux(cacheHit && !unique, ChiResp.SC, ChiResp.I)))
+      when(victimHit) { victimDirty := false.B }
+      when(cacheHit) {
+        cacheValid(index) := !unique
+        cacheStates(index) := Mux(unique, RnCacheState.I, RnCacheState.SC)
+      }
+    }
+
+    val snoopRspTx = Wire(Decoupled(new RspFlit(params)))
+    snoopRspTx.valid := snoopPending && !snoopHasData
+    snoopRspTx.bits := 0.U.asTypeOf(snoopRspTx.bits)
+    snoopRspTx.bits.tgtID := outer.params.hnId.U
+    snoopRspTx.bits.srcID := outer.params.nodeId.U
+    snoopRspTx.bits.txnID := snoopTxnId
+    snoopRspTx.bits.opcode := ChiOpcode.Rsp.SnpResp
+    snoopRspTx.bits.resp := snoopResp
+
+    val snoopDatTx = Wire(Decoupled(new DatFlit(params)))
+    snoopDatTx.valid := snoopPending && snoopHasData
+    snoopDatTx.bits := 0.U.asTypeOf(snoopDatTx.bits)
+    snoopDatTx.bits.tgtID := outer.params.hnId.U
+    snoopDatTx.bits.srcID := outer.params.nodeId.U
+    snoopDatTx.bits.txnID := snoopTxnId
+    snoopDatTx.bits.opcode := ChiOpcode.Dat.SnpRespData
+    snoopDatTx.bits.resp := snoopResp
+    snoopDatTx.bits.data := snoopData
+    when(snoopRspTx.fire || snoopDatTx.fire) { snoopPending := false.B }
+
+    // Prefer snoop replies, but never replace a message already presented under backpressure.
+    def arbitrate[T <: Data](main: DecoupledIO[T], snoop: DecoupledIO[T], out: DecoupledIO[T]): Unit = {
+      val locked = RegInit(false.B)
+      val heldSnoop = Reg(Bool())
+      val chooseSnoop = Mux(locked, heldSnoop, snoop.valid)
+      out.valid := Mux(chooseSnoop, snoop.valid, main.valid)
+      out.bits := Mux(chooseSnoop, snoop.bits, main.bits)
+      main.ready := out.ready && !chooseSnoop
+      snoop.ready := out.ready && chooseSnoop
+      when(out.valid) {
+        locked := !out.ready
+        heldSnoop := chooseSnoop
+      }
+    }
+    arbitrate(mainRspTx, snoopRspTx, port.rspTx)
+    arbitrate(mainDatTx, snoopDatTx, port.datTx)
+  } else {
+    port.rspTx <> mainRspTx
+    port.datTx <> mainDatTx
+    port.snpRx.ready := false.B
+  }
+
   port.snpTx.valid := false.B
   port.snpTx.bits := 0.U.asTypeOf(port.snpTx.bits)
   port.reqRx.ready := false.B
-  port.snpRx.ready := false.B
 }

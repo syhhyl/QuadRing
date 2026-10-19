@@ -24,6 +24,35 @@ private[chi] object ChiNodeFixtures {
     outer.peer.in.head._1 <> io.network
   }
 
+  /** Real coherent RN; the HN port is driven externally to exercise snoops over the rings. */
+  class RnOnNoC(val config: ChiNoCParams, val ids: Seq[Int])(implicit p: Parameters) extends LazyModule {
+    require(config.ring.nodeCount == 4 && ids.size == 4, "RN fixture requires four ring stops")
+    val network = LazyModule(new ChiNoC(config))
+    val rn = LazyModule(new RnNode(RnParams(ids.head, ids(1), coherent = true, cacheLines = 2)))
+    val drivers = Seq(ChiRole.HN, ChiRole.RN, ChiRole.SN).zip(ids.tail).map { case (role, id) =>
+      new SourceNode(ChiNodeImp)(Seq(ChiEndpointParams(id, role)))
+    }
+    network.node := rn.node
+    drivers.foreach { driver => network.node := driver }
+    lazy val module = new RnOnNoCModule(this)
+  }
+  class RnOnNoCModule(outer: RnOnNoC) extends LazyModuleImp(outer) {
+    val io = IO(new Bundle {
+      val local = new RnPort(outer.config.chi)
+      val hn = Flipped(new ChiPort(outer.config.chi))
+    })
+    io.local <> outer.rn.module.io
+    outer.drivers.head.out.head._1 <> io.hn
+    for (driver <- outer.drivers.tail) {
+      val port = driver.out.head._1
+      Seq(port.reqTx, port.rspTx, port.snpTx, port.datTx).foreach { tx =>
+        tx.valid := false.B
+        tx.bits := 0.U.asTypeOf(tx.bits)
+      }
+      Seq(port.reqRx, port.rspRx, port.snpRx, port.datRx).foreach(_.ready := true.B)
+    }
+  }
+
   class Hn(val config: ChiNoCParams, val params: HnParams)(implicit p: Parameters) extends LazyModule {
     val hn = LazyModule(new HnNode(params))
     val peer = new SinkNode(ChiNodeImp)(Seq(config))
