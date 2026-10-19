@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile, test, and generate RTL from the repository root.
+# Compile, test, generate, and lint RTL from the repository root.
 set -euo pipefail
 
 if (( $# > 1 )) || [[ "${1:-}" != "" && "${1:-}" != "--long" ]]; then
@@ -12,9 +12,21 @@ fi
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-./mill QuadRing.compile
-./mill QuadRing.test
-./mill QuadRing.runMain noc.RingMain --target-dir generated/ring
-./mill QuadRing.runMain chi.ChiNoCMain --target-dir generated/chi
-./mill QuadRing.runMain chi.ChiSystemMain --target-dir generated/system
-./mill QuadRing.runMain chi.ChiSystemMain --coherent --target-dir generated/system-coherent
+lint_rtl() (
+  echo "Linting $1 ($2)"
+  cd -- "$1"
+  verilator --lint-only --top-module "$2" -f filelist.f
+)
+
+# Close build handles after each phase, including on NFS workspaces.
+./mill --no-daemon QuadRing.compile
+./mill --no-daemon QuadRing.test
+./mill --no-daemon QuadRing.runMain noc.RingMain --target-dir generated/ring
+./mill --no-daemon QuadRing.runMain chi.ChiNoCMain --target-dir generated/chi
+./mill --no-daemon QuadRing.runMain chi.ChiSystemMain --target-dir generated/system
+./mill --no-daemon QuadRing.runMain chi.ChiSystemMain --coherent --target-dir generated/system-coherent
+
+lint_rtl generated/ring Ring
+lint_rtl generated/chi ChiNoCTop
+lint_rtl generated/system ChiSystem
+lint_rtl generated/system-coherent ChiSystem

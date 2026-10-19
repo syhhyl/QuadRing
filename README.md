@@ -41,11 +41,11 @@ Each channel uses this topology in the four-node configuration:
     +----------------+                +----------------+
 ```
 
-The ring core and the non-coherent two-RN system each pass 500,000 randomized
-simulation cycles. System tests compare reads and writes with a reference memory
-and check backpressure, transaction IDs, loss, duplication, and completion.
-Coherent operation is covered by directed tests. CHI transport tests cover node ID
-mapping, all source/destination pairs, and backpressure.
+Randomized ring, non-coherent, and coherent tests each cover five seeds and at least
+500,000 cycles in long mode. System tests compare reads and writes with an independent
+reference model and check backpressure, transaction IDs, loss, duplication, and completion.
+Coherent tests also check cache/victim ownership, retry execution, and credit/reservation
+balance. CHI transport tests cover node ID mapping and all source/destination pairs.
 
 Requires JDK 21, Verilator, a C++ compiler, and Make.
 
@@ -54,8 +54,9 @@ git submodule update --init --recursive
 ./test.sh
 ```
 
-Compiles sources, runs tests, and emits SystemVerilog to `generated/`.
-Random tests run 5,000 cycles per seed; use `./test.sh --long` for 100,000. CI runs the long mode.
+Compiles sources, runs tests, and emits SystemVerilog to `generated/` with Verilator lint checks.
+Random tests run 5,000 cycles per seed; use `./test.sh --long` for 100,000.
+CI runs the same script in long mode.
 Emits a 32-bit single ring to `generated/ring/` and the four-channel CHI transport
 to `generated/chi/`. Endpoint systems are emitted to `generated/system/`
 (non-coherent) and `generated/system-coherent/` (coherent).

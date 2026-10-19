@@ -12,10 +12,10 @@ Run from the repository root; `./mill` bootstraps Mill:
 
 - `git submodule update --init --recursive`: initialize dependencies.
 - `./mill QuadRing.compile`: compile designs and dependencies.
-- `./mill QuadRing.test`: run all tests; CI uses `./mill _.test`.
+- `./mill QuadRing.test`: run all tests; CI uses `./test.sh --long`.
 - `./mill QuadRing.test.testOnly <package.DesignSpec>`: run one suite once tests exist.
 - `./mill QuadRing.runMain <package.DesignMain>`: run a generator once implemented.
-- `./test.sh`: compile, test, and generate RTL under `generated/`; the script selects the repository root automatically.
+- `./test.sh`: compile, test, generate RTL under `generated/`, and lint each output with Verilator; the script selects the repository root automatically and runs Mill without a daemon.
 - `./test.sh --long`: run the same checks with 100,000 random cycles per seed instead of the default 5,000. Direct Mill commands use `QUADRING_LONG_TESTS=1` for long mode; CI sets this variable.
 
 Mill is the only supported build tool; do not reintroduce sbt.
