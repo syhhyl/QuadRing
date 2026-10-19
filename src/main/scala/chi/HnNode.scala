@@ -66,7 +66,6 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val retryAckTarget = Reg(UInt(params.nodeIdWidth.W))
   private val retryAckTxn = Reg(UInt(params.txnIdWidth.W))
   private val slotWidth = log2Ceil(outer.params.retrySlots max 2)
-  private val grantSlot = Reg(UInt(slotWidth.W))
   private val rrSlot = RegInit(0.U(slotWidth.W))
   private val waitingForSnReply = state === waitSnData || state === waitSnDbId
   private val retryReady = retryAckSeen && creditHeld
@@ -88,6 +87,9 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     selected
   }
 
+  // Other RNs may reach the REQ head while the granted requester is still reissuing.
+  private val reservedRetry = state === waitRetryReq &&
+    port.reqRx.bits.srcID === request.srcID
   private val requestDirectoryIndex: UInt = if (outer.params.coherent) {
     port.reqRx.bits.addr(6 + directoryIndexWidth - 1, 6)
   } else 0.U(directoryIndexWidth.W)
@@ -128,7 +130,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       // This directory covers a bounded address space; entries are never replaced.
       assert(requestInDirectoryRange, "HN address exceeds directory range")
     }
-    when(port.reqRx.fire && (state === idle || state === waitRetryReq)) {
+    when(port.reqRx.fire && (state === idle || reservedRetry)) {
       when(coherentRead) {
         val requesterUnique = (0 until 2).map { slot =>
           directoryHolderValid(requestDirectoryIndex)(slot) &&
@@ -178,18 +180,17 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
 
   port.reqRx.ready := (state === idle && !hasRetryWaiting) ||
     (activeState && retrySlotFree && !retryAckPending) ||
-    state === waitRetryReq
+    // Drain a pending RetryAck before a credited write can present its DBID response.
+    (state === waitRetryReq && !retryAckPending && (reservedRetry || retrySlotFree))
   when(port.reqRx.fire) {
     val req = port.reqRx.bits
-    when(state === waitRetryReq) {
-      val saved = retryRequests(grantSlot)
+    when(reservedRetry) {
+      val saved = request
       assert(req.opcode === saved.opcode && req.addr === saved.addr && req.txnID === saved.txnID &&
         req.srcID === saved.srcID && req.tgtID === saved.tgtID,
         "HN received a retry for another request")
       assert(!req.allowRetry && req.pCrdType === 0.U, "HN expects a credited retry")
       request := req
-      retryWaiting(grantSlot) := false.B
-      rrSlot := Mux(grantSlot === (outer.params.retrySlots - 1).U, 0.U, grantSlot + 1.U)
       retryAckSeen := false.B
       creditHeld := false.B
       // Upstream credit does not count as a retry of the downstream SN request.
@@ -288,7 +289,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.rspTx.valid := retryAckPending || state === sendRnRsp || state === sendGrant
   port.rspTx.bits := 0.U.asTypeOf(port.rspTx.bits)
   port.rspTx.bits.tgtID := Mux(state === sendRnRsp, request.srcID,
-    Mux(retryAckPending, retryAckTarget, retryRequests(grantSlot).srcID))
+    Mux(retryAckPending, retryAckTarget, request.srcID))
   port.rspTx.bits.srcID := outer.params.nodeId.U
   port.rspTx.bits.txnID := Mux(state === sendRnRsp, request.txnID,
     Mux(retryAckPending, retryAckTxn, 0.U))
@@ -465,7 +466,13 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.snpRx.ready := false.B
 
   when(state === idle && hasRetryWaiting) {
-    grantSlot := selectedRetrySlot
+    // Reserve the idle transaction context, freeing the waiting slot before granting credit.
+    // Otherwise a new REQ at the ring FIFO head can block the credited retry behind it.
+    request := (if (outer.params.retrySlots == 1) retryRequests.head else retryRequests(selectedRetrySlot))
+    for (slot <- 0 until outer.params.retrySlots) {
+      when(selectedRetrySlot === slot.U) { retryWaiting(slot) := false.B }
+    }
+    rrSlot := Mux(selectedRetrySlot === (outer.params.retrySlots - 1).U, 0.U, selectedRetrySlot + 1.U)
     state := sendGrant
   }
 }

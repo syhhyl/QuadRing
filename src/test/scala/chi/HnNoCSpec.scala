@@ -177,6 +177,71 @@ class HnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
     }
   }
 
+  for ((config, ids) <- configs) {
+    s"one-slot HN drains a new request ahead of a credited retry in the real ring, IDs $ids" in {
+      simulate(LazyModule(new ChiNodeFixtures.HnSnOnNoC(config, ids, lines, retrySlots = 1)).module) { dut =>
+        dut.io.foreach(initializeDriver)
+
+        def receiveRsp(rn: Int, txn: Int, opcode: UInt): Unit = {
+          val port = dut.io(rn)
+          waitFor(dut, "retry admission response stalled: ")(port.rspRx.valid.peekBoolean())
+          expectResponse(port.rspRx.bits, rnId(ids, rn), ids(1), txn, opcode)
+          port.rspRx.ready.poke(true)
+          dut.clock.step()
+          port.rspRx.ready.poke(false)
+        }
+        def reissue(rn: Int, txn: Int, index: Int): Unit = {
+          val port = dut.io(rn)
+          request(port.reqTx.bits, ids(1), rnId(ids, rn), txn, BigInt(index) << 6)
+          port.reqTx.bits.allowRetry.poke(false)
+          port.reqTx.valid.poke(true)
+          waitFor(dut, "credited retry injection stalled: ")(port.reqTx.ready.peekBoolean())
+          dut.clock.step()
+          port.reqTx.valid.poke(false)
+        }
+        def receiveCompletion(rn: Int, txn: Int, value: BigInt): Unit = {
+          val port = dut.io(rn)
+          waitFor(dut, "credited read did not complete: ")(port.datRx.valid.peekBoolean())
+          // The next RN's grant may arrive while this DAT waits at the RN stop.
+          for (_ <- 0 until 8) {
+            port.datRx.valid.expect(true.B)
+            expectData(port.datRx.bits, rnId(ids, rn), ids(1), txn, value)
+            dut.io(1 - rn).datRx.valid.expect(false.B)
+            dut.clock.step()
+          }
+          port.datRx.ready.poke(true)
+          dut.clock.step()
+          port.datRx.ready.poke(false)
+        }
+
+        // Hold an active write at WaitRnData so RN0 must occupy the only retry slot.
+        sendRequest(dut, ids, 1, 1, 0, write = true)
+        acceptDbId(dut, ids, 1, 1)
+        sendRequest(dut, ids, 0, 2, 1, write = false)
+        receiveRsp(0, 2, ChiOpcode.Rsp.RetryAck)
+        sendData(dut, ids, 1, lines.head)
+        receiveRsp(0, 0, ChiOpcode.Rsp.PCrdGrant)
+
+        // Delay RN0's reissue until RN1's new REQ is at the HN FIFO head.
+        sendRequest(dut, ids, 1, 3, 2, write = false)
+        dut.clock.step(16)
+        reissue(0, 2, 1)
+        receiveRsp(1, 3, ChiOpcode.Rsp.RetryAck)
+        // The waiting slot is full again. RN0 must still pass and complete exactly once.
+        receiveCompletion(0, 2, lines(1))
+        receiveRsp(1, 0, ChiOpcode.Rsp.PCrdGrant)
+        reissue(1, 3, 2)
+        receiveCompletion(1, 3, lines(2))
+        for (_ <- 0 until 24) {
+          dut.io.foreach { port =>
+            Seq(port.reqRx, port.rspRx, port.snpRx, port.datRx).foreach(_.valid.expect(false.B))
+          }
+          dut.clock.step()
+        }
+      }
+    }
+  }
+
   for (phase <- Seq("blocked RN authorization", "after RN write data")) {
     s"global reset cancels a write through HN and SN during $phase" in {
       val (config, ids) = configs.head

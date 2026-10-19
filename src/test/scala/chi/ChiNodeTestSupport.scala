@@ -103,11 +103,11 @@ private[chi] object ChiNodeFixtures {
 
   /** Real HN and SN; the two RN ports supply flits from the testbench. */
   class HnSnOnNoC(val config: ChiNoCParams, val ids: Seq[Int], val initialLines: Seq[BigInt],
-    coherent: Boolean = false)
+    coherent: Boolean = false, retrySlots: Int = 2)
     (implicit p: Parameters) extends LazyModule {
     require(config.ring.nodeCount == 4 && ids.size == 4, "HN/SN fixture requires four ring stops")
     val network = LazyModule(new ChiNoC(config))
-    val hn = LazyModule(new HnNode(HnParams(ids(1), ids(3), coherent = coherent)))
+    val hn = LazyModule(new HnNode(HnParams(ids(1), ids(3), coherent = coherent, retrySlots = retrySlots)))
     val sn = LazyModule(new SnNode(SnParams(ids(3), initialLines)))
     val drivers = Seq(ids.head, ids(2)).map { id =>
       new SourceNode(ChiNodeImp)(Seq(ChiEndpointParams(id, ChiRole.RN)))
