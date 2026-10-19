@@ -122,7 +122,7 @@ class HnEvictSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
             if (otherAddress) BigInt(64) else BigInt(0), ChiOpcode.Req.Evict)
           expectComp(dut, hn, if (otherAddress) 0 else 2, 4)
           dut.clock.step()
-          issue(dut, hn, 2, 5, 0, ChiOpcode.Req.ReadShared)
+          issue(dut, hn, 2, 5, 0, ChiOpcode.Req.ReadUnique)
         }
       }
       error.getMessage should include("requires snoop for another holder")
@@ -185,7 +185,7 @@ class HnEvictSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
         readLine(dut, hn, 0, 3, 0, acknowledge = false)
         // Queue the competing read first so it gets credit before the Evict.
         for ((src, txn, opcode) <- Seq(
-          (2, 4, ChiOpcode.Req.ReadShared), (0, 5, ChiOpcode.Req.Evict))) {
+          (2, 4, ChiOpcode.Req.ReadUnique), (0, 5, ChiOpcode.Req.Evict))) {
           issue(dut, hn, src, txn, 0, opcode)
           port.rspTx.valid.expect(true.B)
           expectResponse(port.rspTx.bits, src, hn.nodeId, txn, ChiOpcode.Rsp.RetryAck)
@@ -196,7 +196,7 @@ class HnEvictSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
         port.rspTx.valid.expect(true.B)
         expectResponse(port.rspTx.bits, 2, hn.nodeId, 0, ChiOpcode.Rsp.PCrdGrant)
         dut.clock.step()
-        issue(dut, hn, 2, 4, 0, ChiOpcode.Req.ReadShared, credited = true)
+        issue(dut, hn, 2, 4, 0, ChiOpcode.Req.ReadUnique, credited = true)
       }
     }
     error.getMessage should include("requires snoop for another holder")

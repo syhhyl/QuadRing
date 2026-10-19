@@ -34,11 +34,15 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
 
   val (idle :: sendSnReq :: waitSnData :: sendRnData :: sendRnRsp ::
     waitRnData :: waitSnDbId :: sendSnData :: waitSnComp :: sendGrant :: waitRetryReq ::
-    waitRnCompAck :: Nil) = Enum(12)
+    waitRnCompAck :: sendSnp :: waitSnpResponse :: Nil) = Enum(14)
   val state = RegInit(idle)
   private val request = Reg(new ReqFlit(params))
   private val data = Reg(UInt(512.W))
   private val completionResp = RegInit(ChiResp.I)
+  private val snoopTarget = Reg(UInt(params.nodeIdWidth.W))
+  private val snoopHolderSlot = Reg(UInt(1.W))
+  private val snoopRequesterSlot = Reg(UInt(1.W))
+  private val snoopWrite = RegInit(false.B)
   private val directoryHolderValid = RegInit(VecInit(Seq.fill(outer.params.directoryLines) {
     VecInit(Seq.fill(2)(false.B))
   }))
@@ -50,6 +54,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   // One downstream request is active, so its ID can remain zero.
   private val downstreamTxnId = 0.U(params.txnIdWidth.W)
   private val dbId = 0.U(params.txnIdWidth.W)
+  private val snoopTxnId = 0.U(params.txnIdWidth.W)
   private val snDbId = Reg(UInt(params.txnIdWidth.W))
   private val retryAckSeen = RegInit(false.B)
   private val creditHeld = RegInit(false.B)
@@ -96,6 +101,21 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val requestHasOtherHolder =
     ((directoryHolderValid(requestDirectoryIndex)(0) && !requestHolder0) ||
       (directoryHolderValid(requestDirectoryIndex)(1) && !requestHolder1))
+  private val sharedNeedsSnoop = (if (outer.params.coherent) {
+    port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && requestHasOtherHolder
+  } else false.B)
+
+  // Resolve both holders from the saved request only after the snoop response arrives.
+  private def finishSharedSnoop(resp: UInt): Unit = {
+    val index = request.addr(6 + directoryIndexWidth - 1, 6)
+    val invalid = resp === ChiResp.I || resp === ChiResp.I_PD
+    directoryHolderValid(index)(snoopHolderSlot) := !invalid
+    directoryHolderStates(index)(snoopHolderSlot) := Mux(invalid, RnCacheState.I, RnCacheState.SC)
+    directoryHolderValid(index)(snoopRequesterSlot) := true.B
+    directoryHolderIds(index)(snoopRequesterSlot) := request.srcID
+    directoryHolderStates(index)(snoopRequesterSlot) := Mux(invalid, RnCacheState.UC, RnCacheState.SC)
+    completionResp := Mux(invalid, ChiResp.UC, ChiResp.SC)
+  }
   if (outer.params.coherent) {
     val coherentRead = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
       port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique
@@ -107,25 +127,25 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     }
     when(port.reqRx.fire && (state === idle || state === waitRetryReq)) {
       when(coherentRead) {
-        val otherUnique = (0 until 2).map { slot =>
-          directoryHolderValid(requestDirectoryIndex)(slot) &&
-            directoryHolderIds(requestDirectoryIndex)(slot) =/= port.reqRx.bits.srcID &&
-            directoryHolderStates(requestDirectoryIndex)(slot) === RnCacheState.UC
-        }.reduce(_ || _)
         val requesterUnique = (0 until 2).map { slot =>
           directoryHolderValid(requestDirectoryIndex)(slot) &&
             directoryHolderIds(requestDirectoryIndex)(slot) === port.reqRx.bits.srcID &&
             directoryHolderStates(requestDirectoryIndex)(slot) === RnCacheState.UC
         }.reduce(_ || _)
         assert(!requesterUnique, "HN requester already holds unique permission")
-        assert(!otherUnique && !(port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique &&
+        assert(!(port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique &&
           requestHasOtherHolder), "HN coherent read requires snoop for another holder")
         assert(requestHasHolder || !directoryHolderValid(requestDirectoryIndex).asUInt.andR,
           "HN directory has no free holder slot")
 
         val shared = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && directoryOccupied
         completionResp := Mux(shared, ChiResp.SC, ChiResp.UC)
-        when(!directoryOccupied) {
+        when(sharedNeedsSnoop) {
+          val otherSlot = Mux(directoryHolderValid(requestDirectoryIndex)(0) && !requestHolder0, 0.U, 1.U)
+          snoopTarget := directoryHolderIds(requestDirectoryIndex)(otherSlot)
+          snoopHolderSlot := otherSlot
+          snoopRequesterSlot := Mux(requestHasHolder, Mux(requestHolder0, 0.U, 1.U), 1.U - otherSlot)
+        }.elsewhen(!directoryOccupied) {
           directoryHolderValid(requestDirectoryIndex)(0) := true.B
           directoryHolderIds(requestDirectoryIndex)(0) := port.reqRx.bits.srcID
           directoryHolderStates(requestDirectoryIndex)(0) := RnCacheState.UC
@@ -173,10 +193,11 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       creditHeld := false.B
       // Upstream credit does not count as a retry of the downstream SN request.
       retried := false.B
+      snoopWrite := false.B
       if (outer.params.coherent) {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
-          sendSnReq, sendRnRsp)
+          Mux(sharedNeedsSnoop, sendSnp, sendSnReq), sendRnRsp)
       } else {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
       }
@@ -197,10 +218,11 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       retryAckSeen := false.B
       creditHeld := false.B
       retried := false.B
+      snoopWrite := false.B
       if (outer.params.coherent) {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
-          sendSnReq, sendRnRsp)
+          Mux(sharedNeedsSnoop, sendSnp, sendSnReq), sendRnRsp)
       } else {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
       }
@@ -240,9 +262,10 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.reqTx.bits.srcID := outer.params.nodeId.U
   port.reqTx.bits.txnID := downstreamTxnId
   if (outer.params.coherent) {
-    port.reqTx.bits.opcode := Mux(request.opcode === ChiOpcode.Req.ReadShared ||
+    port.reqTx.bits.opcode := Mux(snoopWrite, ChiOpcode.Req.WriteNoSnpFull,
+      Mux(request.opcode === ChiOpcode.Req.ReadShared ||
       request.opcode === ChiOpcode.Req.ReadUnique, ChiOpcode.Req.ReadNoSnp,
-      Mux(request.opcode === ChiOpcode.Req.WriteBackFull, ChiOpcode.Req.WriteNoSnpFull, request.opcode))
+      Mux(request.opcode === ChiOpcode.Req.WriteBackFull, ChiOpcode.Req.WriteNoSnpFull, request.opcode)))
   }
   port.reqTx.bits.allowRetry := !retryReady
   port.reqTx.bits.pCrdType := 0.U
@@ -253,8 +276,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       retried := true.B
     }
     if (outer.params.coherent) {
-      state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp ||
-        request.opcode === ChiOpcode.Req.ReadShared || request.opcode === ChiOpcode.Req.ReadUnique,
+      state := Mux(!snoopWrite && (request.opcode === ChiOpcode.Req.ReadNoSnp ||
+        request.opcode === ChiOpcode.Req.ReadShared || request.opcode === ChiOpcode.Req.ReadUnique),
         waitSnData, waitSnDbId)
     } else {
       state := Mux(request.opcode === ChiOpcode.Req.ReadNoSnp, waitSnData, waitSnDbId)
@@ -291,10 +314,20 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   }
 
   port.datRx.ready := state === waitRnData ||
-    (state === waitSnData && !retryAckSeen && !creditHeld && !port.rspRx.valid)
+    (state === waitSnData && !retryAckSeen && !creditHeld && !port.rspRx.valid) ||
+    state === waitSnpResponse && !port.rspRx.valid
   when(port.datRx.fire) {
     val dat = port.datRx.bits
-    when(state === waitSnData) {
+    when(state === waitSnpResponse) {
+      assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === snoopTarget &&
+        dat.txnID === snoopTxnId, "HN received snoop data for another transaction")
+      assert(dat.opcode === ChiOpcode.Dat.SnpRespData && dat.dbID === 0.U &&
+        (dat.resp === ChiResp.SC_PD || dat.resp === ChiResp.I_PD),
+        "HN expects shared snoop data with dirty responsibility")
+      if (outer.params.coherent) { finishSharedSnoop(dat.resp) }
+      snoopWrite := true.B
+      state := sendSnReq
+    }.elsewhen(state === waitSnData) {
       assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === outer.params.snId.U &&
         dat.txnID === downstreamTxnId, "HN received data for another transaction")
       assert(dat.opcode === ChiOpcode.Dat.CompData && dat.resp === ChiResp.I && dat.dbID === 0.U,
@@ -346,10 +379,17 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   }
 
   port.rspRx.ready := (waitingForSnReply && !retryReady) || state === waitSnComp ||
-    state === waitRnCompAck
+    state === waitRnCompAck || state === waitSnpResponse
   when(port.rspRx.fire) {
     val rsp = port.rspRx.bits
-    when(state === waitRnCompAck) {
+    when(state === waitSnpResponse) {
+      assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === snoopTarget &&
+        rsp.txnID === snoopTxnId, "HN received snoop response for another transaction")
+      assert(rsp.opcode === ChiOpcode.Rsp.SnpResp && (rsp.resp === ChiResp.I || rsp.resp === ChiResp.SC) &&
+        rsp.dbID === 0.U && rsp.pCrdType === 0.U, "HN expects shared SnpResp with I or SC")
+      if (outer.params.coherent) { finishSharedSnoop(rsp.resp) }
+      state := sendSnReq
+    }.elsewhen(state === waitRnCompAck) {
       assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === request.srcID &&
         rsp.txnID === dbId && rsp.opcode === ChiOpcode.Rsp.CompAck &&
         rsp.resp === ChiResp.I && rsp.dbID === 0.U && rsp.pCrdType === 0.U,
@@ -382,7 +422,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
           assert(state === waitSnComp && rsp.opcode === ChiOpcode.Rsp.Comp,
             "HN expects SN write completion")
           assert(rsp.dbID === snDbId, "HN received completion for another data slot")
-          state := idle
+          state := (if (outer.params.coherent) Mux(snoopWrite, sendRnData, idle) else idle)
         }
       }
     }
@@ -396,8 +436,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.datTx.bits.txnID := Mux(state === sendSnData, snDbId, request.txnID)
   port.datTx.bits.opcode := Mux(state === sendSnData, ChiOpcode.Dat.NonCopyBackWrData, ChiOpcode.Dat.CompData)
   port.datTx.bits.resp := (if (outer.params.coherent) {
-    Mux(request.opcode === ChiOpcode.Req.ReadShared ||
-      request.opcode === ChiOpcode.Req.ReadUnique, completionResp, ChiResp.I)
+    Mux(state === sendRnData && (request.opcode === ChiOpcode.Req.ReadShared ||
+      request.opcode === ChiOpcode.Req.ReadUnique), completionResp, ChiResp.I)
   } else ChiResp.I)
   port.datTx.bits.data := data
   when(port.datTx.fire) {
@@ -411,8 +451,14 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     }
   }
 
-  port.snpTx.valid := false.B
+  port.snpTx.valid := state === sendSnp
   port.snpTx.bits := 0.U.asTypeOf(port.snpTx.bits)
+  port.snpTx.bits.dst := snoopTarget
+  port.snpTx.bits.payload.srcID := outer.params.nodeId.U
+  port.snpTx.bits.payload.txnID := snoopTxnId
+  port.snpTx.bits.payload.opcode := ChiOpcode.Snp.SnpShared
+  port.snpTx.bits.payload.addr := request.addr
+  when(port.snpTx.fire) { state := waitSnpResponse }
   port.snpRx.ready := false.B
 
   when(state === idle && hasRetryWaiting) {

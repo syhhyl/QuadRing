@@ -180,18 +180,16 @@ class HnDirectorySpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport 
     }
   }
 
-  for (opcode <- Seq(ChiOpcode.Req.ReadShared, ChiOpcode.Req.ReadUnique)) {
-    s"another RN cannot read an exclusive line without snoop opcode=${opcode.litValue}" in {
-      val error = intercept[AssertionFailed] {
-        simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
-          initialize(dut.io)
-          issueRead(dut, 0, 3, 0, ChiOpcode.Req.ReadShared)
-          finishRead(dut, 0, 3, 0, lines.head, ChiResp.UC)
-          issueRead(dut, 2, 4, 0, opcode)
-        }
+  "ReadUnique with another holder still requires SnpUnique support" in {
+    val error = intercept[AssertionFailed] {
+      simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
+        initialize(dut.io)
+        issueRead(dut, 0, 3, 0, ChiOpcode.Req.ReadShared)
+        finishRead(dut, 0, 3, 0, lines.head, ChiResp.UC)
+        issueRead(dut, 2, 4, 0, ChiOpcode.Req.ReadUnique)
       }
-      error.getMessage should include("requires snoop for another holder")
     }
+    error.getMessage should include("requires snoop for another holder")
   }
 
   "an address outside the complete directory cannot overwrite a holder" in {

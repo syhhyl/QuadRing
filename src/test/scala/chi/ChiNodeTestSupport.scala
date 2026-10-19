@@ -123,13 +123,28 @@ private[chi] object ChiNodeFixtures {
     outer.drivers.zip(io).foreach { case (driver, port) => driver.out.head._1 <> port }
   }
 
-  /** Coherent integration fixture; expose only the two real RNs' local interfaces. */
+  /** Test-only handshake outputs, created inside the HN's module boundary. */
+  class ObservedHn(params: HnParams)(implicit p: Parameters) extends HnNode(params) {
+    val transfers = InModuleBody {
+      val io = IO(new Bundle {
+        val cancelledWriteback = Output(Bool())
+        val memoryWrite = Output(Bool())
+      })
+      val port = node.out.head._1
+      io.cancelledWriteback := port.datRx.fire &&
+        port.datRx.bits.opcode === ChiOpcode.Dat.CopyBackWrData && port.datRx.bits.resp === ChiResp.I
+      io.memoryWrite := port.reqTx.fire && port.reqTx.bits.opcode === ChiOpcode.Req.WriteNoSnpFull
+      io
+    }
+  }
+
+  /** Coherent integration fixture with local RN interfaces and test-only transfer observations. */
   class CoherentSystem(val config: ChiNoCParams, val ids: Seq[Int], val initialLines: Seq[BigInt],
     cacheLines: Int)(implicit p: Parameters) extends LazyModule {
     require(config.ring.nodeCount == 4 && ids.size == 4, "coherent fixture requires four ring stops")
     val network = LazyModule(new ChiNoC(config))
     val rn0 = LazyModule(new RnNode(RnParams(ids.head, ids(1), coherent = true, cacheLines = cacheLines)))
-    val hn = LazyModule(new HnNode(HnParams(ids(1), ids(3), coherent = true,
+    val hn = LazyModule(new ObservedHn(HnParams(ids(1), ids(3), coherent = true,
       directoryLines = initialLines.size)))
     val rn1 = LazyModule(new RnNode(RnParams(ids(2), ids(1), coherent = true, cacheLines = cacheLines)))
     val sn = LazyModule(new SnNode(SnParams(ids(3), initialLines)))
@@ -143,6 +158,11 @@ private[chi] object ChiNodeFixtures {
     val io = IO(Vec(2, new RnPort(outer.config.chi)))
     io.head <> outer.rn0.module.io
     io(1) <> outer.rn1.module.io
+    // Handshake observations for end-to-end loss/duplication and cancellation checks.
+    val cancelledWriteback = IO(Output(Bool()))
+    val memoryWrite = IO(Output(Bool()))
+    cancelledWriteback := outer.hn.transfers.cancelledWriteback
+    memoryWrite := outer.hn.transfers.memoryWrite
   }
 }
 

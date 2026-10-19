@@ -226,7 +226,7 @@ class HnWriteBackSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport 
           dut.io.rspTx.valid.expect(false.B)
           dut.clock.step()
         }
-        issue(dut, hn, 0, 5, 0, ChiOpcode.Req.ReadShared)
+        issue(dut, hn, 0, 5, 0, ChiOpcode.Req.ReadUnique)
       }
     }
     error.getMessage should include("requires snoop for another holder")
