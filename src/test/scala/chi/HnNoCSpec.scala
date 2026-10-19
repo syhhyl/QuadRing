@@ -179,7 +179,10 @@ class HnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
 
   for ((config, ids) <- configs) {
     s"one-slot HN drains a new request ahead of a credited retry in the real ring, IDs $ids" in {
-      simulate(LazyModule(new ChiNodeFixtures.HnSnOnNoC(config, ids, lines, retrySlots = 1)).module) { dut =>
+      val top = LazyModule(new RetryCheckedHnSn(config, ids, lines))
+      simulate(top.module) { dut =>
+        val protocol = top.protocol.getWrappedValue
+        protocol.checkDrained.poke(false)
         dut.io.foreach(initializeDriver)
 
         def receiveRsp(rn: Int, txn: Int, opcode: UInt): Unit = {
@@ -238,6 +241,14 @@ class HnNoCSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
           }
           dut.clock.step()
         }
+        protocol.hn.first.expect(3.U)
+        protocol.hn.acks.expect(2.U)
+        protocol.hn.grants.expect(2.U)
+        protocol.hn.retries.expect(2.U)
+        protocol.hn.started.expect(3.U)
+        protocol.hn.finished.expect(3.U)
+        protocol.checkDrained.poke(true)
+        dut.clock.step()
       }
     }
   }

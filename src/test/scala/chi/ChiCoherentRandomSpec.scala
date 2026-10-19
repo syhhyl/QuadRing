@@ -87,7 +87,10 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
 
   for ((params, seed) <- cases) {
     s"seed $seed checks $runCycles coherent cycles with ${params.network.chi}" in {
-      simulate(LazyModule(new OwnershipCheckedSystem(params)).module) { dut =>
+      val top = LazyModule(new ProtocolCheckedSystem(params))
+      simulate(top.module) { dut =>
+        val protocol = top.protocol.getWrappedValue
+        protocol.checkDrained.poke(false)
         val ports = Seq(dut.io.rn0, dut.io.rn1)
         ports.foreach(initialize)
         val random = new Random(seed)
@@ -244,6 +247,9 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
           ports.foreach(_.response.valid.expect(false.B))
           step()
         }
+        protocol.hn.acks.peek().litValue should be > BigInt(0)
+        protocol.checkDrained.poke(true)
+        step()
         println(s"[ChiCoherentRandomSpec] seed=$seed: passed, read back, and drained")
       }
     }
