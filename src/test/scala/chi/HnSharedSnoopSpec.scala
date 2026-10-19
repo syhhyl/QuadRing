@@ -282,7 +282,7 @@ class HnSharedSnoopSpec extends AnyFreeSpec with Matchers with ChiNodeTestSuppor
         }
       }
       error.getMessage should include(if (Set("tgtID", "srcID", "txnID")(field))
-        "another transaction" else if (dirty) "shared snoop data" else "shared SnpResp")
+        "another transaction" else if (dirty) "snoop data" else "SnpResp")
     }
   }
 
@@ -299,7 +299,7 @@ class HnSharedSnoopSpec extends AnyFreeSpec with Matchers with ChiNodeTestSuppor
         dut.clock.step()
       }
     }
-    error.getMessage should include("shared SnpResp")
+    error.getMessage should include("SnpResp")
   }
 
   "reset clears the snoop target, dirty continuation, and directory" in {

@@ -180,16 +180,18 @@ class HnDirectorySpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport 
     }
   }
 
-  "ReadUnique with another holder still requires SnpUnique support" in {
-    val error = intercept[AssertionFailed] {
-      simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
-        initialize(dut.io)
-        issueRead(dut, 0, 3, 0, ChiOpcode.Req.ReadShared)
-        finishRead(dut, 0, 3, 0, lines.head, ChiResp.UC)
-        issueRead(dut, 2, 4, 0, ChiOpcode.Req.ReadUnique)
+  "ReadUnique snoops the existing holder before accessing SN" in {
+    simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
+      initialize(dut.io)
+      issueRead(dut, 0, 3, 0, ChiOpcode.Req.ReadShared)
+      finishRead(dut, 0, 3, 0, lines.head, ChiResp.UC)
+      dut.io.snpTx.ready.poke(false)
+      issueRead(dut, 2, 4, 0, ChiOpcode.Req.ReadUnique)
+      for (_ <- 0 until 4) {
+        expectSnoopRequest(dut.io, 0, hn.nodeId, 0)
+        dut.clock.step()
       }
     }
-    error.getMessage should include("requires snoop for another holder")
   }
 
   "an address outside the complete directory cannot overwrite a holder" in {

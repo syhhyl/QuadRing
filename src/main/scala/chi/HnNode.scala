@@ -43,6 +43,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val snoopHolderSlot = Reg(UInt(1.W))
   private val snoopRequesterSlot = Reg(UInt(1.W))
   private val snoopWrite = RegInit(false.B)
+  private val uniqueRead = request.opcode === ChiOpcode.Req.ReadUnique
   private val directoryHolderValid = RegInit(VecInit(Seq.fill(outer.params.directoryLines) {
     VecInit(Seq.fill(2)(false.B))
   }))
@@ -101,12 +102,13 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   private val requestHasOtherHolder =
     ((directoryHolderValid(requestDirectoryIndex)(0) && !requestHolder0) ||
       (directoryHolderValid(requestDirectoryIndex)(1) && !requestHolder1))
-  private val sharedNeedsSnoop = (if (outer.params.coherent) {
-    port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && requestHasOtherHolder
+  private val readNeedsSnoop = (if (outer.params.coherent) {
+    (port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
+      port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique) && requestHasOtherHolder
   } else false.B)
 
   // Resolve both holders from the saved request only after the snoop response arrives.
-  private def finishSharedSnoop(resp: UInt): Unit = {
+  private def finishSnoop(resp: UInt): Unit = {
     val index = request.addr(6 + directoryIndexWidth - 1, 6)
     val invalid = resp === ChiResp.I || resp === ChiResp.I_PD
     directoryHolderValid(index)(snoopHolderSlot) := !invalid
@@ -114,7 +116,8 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     directoryHolderValid(index)(snoopRequesterSlot) := true.B
     directoryHolderIds(index)(snoopRequesterSlot) := request.srcID
     directoryHolderStates(index)(snoopRequesterSlot) := Mux(invalid, RnCacheState.UC, RnCacheState.SC)
-    completionResp := Mux(invalid, ChiResp.UC, ChiResp.SC)
+    completionResp := Mux(request.opcode === ChiOpcode.Req.ReadUnique && resp === ChiResp.I_PD,
+      ChiResp.UD_PD, Mux(invalid, ChiResp.UC, ChiResp.SC))
   }
   if (outer.params.coherent) {
     val coherentRead = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared ||
@@ -133,14 +136,12 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
             directoryHolderStates(requestDirectoryIndex)(slot) === RnCacheState.UC
         }.reduce(_ || _)
         assert(!requesterUnique, "HN requester already holds unique permission")
-        assert(!(port.reqRx.bits.opcode === ChiOpcode.Req.ReadUnique &&
-          requestHasOtherHolder), "HN coherent read requires snoop for another holder")
         assert(requestHasHolder || !directoryHolderValid(requestDirectoryIndex).asUInt.andR,
           "HN directory has no free holder slot")
 
         val shared = port.reqRx.bits.opcode === ChiOpcode.Req.ReadShared && directoryOccupied
         completionResp := Mux(shared, ChiResp.SC, ChiResp.UC)
-        when(sharedNeedsSnoop) {
+        when(readNeedsSnoop) {
           val otherSlot = Mux(directoryHolderValid(requestDirectoryIndex)(0) && !requestHolder0, 0.U, 1.U)
           snoopTarget := directoryHolderIds(requestDirectoryIndex)(otherSlot)
           snoopHolderSlot := otherSlot
@@ -197,7 +198,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       if (outer.params.coherent) {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
-          Mux(sharedNeedsSnoop, sendSnp, sendSnReq), sendRnRsp)
+          Mux(readNeedsSnoop, sendSnp, sendSnReq), sendRnRsp)
       } else {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
       }
@@ -222,7 +223,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       if (outer.params.coherent) {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp ||
           req.opcode === ChiOpcode.Req.ReadShared || req.opcode === ChiOpcode.Req.ReadUnique,
-          Mux(sharedNeedsSnoop, sendSnp, sendSnReq), sendRnRsp)
+          Mux(readNeedsSnoop, sendSnp, sendSnReq), sendRnRsp)
       } else {
         state := Mux(req.opcode === ChiOpcode.Req.ReadNoSnp, sendSnReq, sendRnRsp)
       }
@@ -322,11 +323,12 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
       assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === snoopTarget &&
         dat.txnID === snoopTxnId, "HN received snoop data for another transaction")
       assert(dat.opcode === ChiOpcode.Dat.SnpRespData && dat.dbID === 0.U &&
-        (dat.resp === ChiResp.SC_PD || dat.resp === ChiResp.I_PD),
-        "HN expects shared snoop data with dirty responsibility")
-      if (outer.params.coherent) { finishSharedSnoop(dat.resp) }
-      snoopWrite := true.B
-      state := sendSnReq
+        (dat.resp === ChiResp.I_PD || (!uniqueRead && dat.resp === ChiResp.SC_PD)),
+        "HN expects snoop data with dirty responsibility")
+      if (outer.params.coherent) { finishSnoop(dat.resp) }
+      // Unique transfers dirty responsibility directly; shared first cleans the line in SN.
+      snoopWrite := !uniqueRead
+      state := Mux(uniqueRead, sendRnData, sendSnReq)
     }.elsewhen(state === waitSnData) {
       assert(dat.tgtID === outer.params.nodeId.U && dat.srcID === outer.params.snId.U &&
         dat.txnID === downstreamTxnId, "HN received data for another transaction")
@@ -385,9 +387,10 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
     when(state === waitSnpResponse) {
       assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === snoopTarget &&
         rsp.txnID === snoopTxnId, "HN received snoop response for another transaction")
-      assert(rsp.opcode === ChiOpcode.Rsp.SnpResp && (rsp.resp === ChiResp.I || rsp.resp === ChiResp.SC) &&
-        rsp.dbID === 0.U && rsp.pCrdType === 0.U, "HN expects shared SnpResp with I or SC")
-      if (outer.params.coherent) { finishSharedSnoop(rsp.resp) }
+      assert(rsp.opcode === ChiOpcode.Rsp.SnpResp &&
+        (rsp.resp === ChiResp.I || (!uniqueRead && rsp.resp === ChiResp.SC)) &&
+        rsp.dbID === 0.U && rsp.pCrdType === 0.U, "HN expects SnpResp with I, or SC for a shared read")
+      if (outer.params.coherent) { finishSnoop(rsp.resp) }
       state := sendSnReq
     }.elsewhen(state === waitRnCompAck) {
       assert(rsp.tgtID === outer.params.nodeId.U && rsp.srcID === request.srcID &&
@@ -456,7 +459,7 @@ class HnNodeModule(outer: HnNode) extends LazyModuleImp(outer) {
   port.snpTx.bits.dst := snoopTarget
   port.snpTx.bits.payload.srcID := outer.params.nodeId.U
   port.snpTx.bits.payload.txnID := snoopTxnId
-  port.snpTx.bits.payload.opcode := ChiOpcode.Snp.SnpShared
+  port.snpTx.bits.payload.opcode := Mux(uniqueRead, ChiOpcode.Snp.SnpUnique, ChiOpcode.Snp.SnpShared)
   port.snpTx.bits.payload.addr := request.addr
   when(port.snpTx.fire) { state := waitSnpResponse }
   port.snpRx.ready := false.B

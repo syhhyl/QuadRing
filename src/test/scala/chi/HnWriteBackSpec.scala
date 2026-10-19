@@ -213,23 +213,21 @@ class HnWriteBackSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport 
   }
 
   "a cancelled writeback has no SN traffic and preserves another owner" in {
-    val error = intercept[AssertionFailed] {
-      simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
-        initialize(dut.io)
-        readLine(dut, hn, 2, 3, 0)
-        issue(dut, hn, 0, 4, 0, ChiOpcode.Req.WriteBackFull)
-        authorize(dut, hn, 0, 4)
-        copyBack(dut, hn, 0, BigInt(0), ChiResp.I)
-        for (_ <- 0 until 6) {
-          dut.io.reqTx.valid.expect(false.B)
-          dut.io.datTx.valid.expect(false.B)
-          dut.io.rspTx.valid.expect(false.B)
-          dut.clock.step()
-        }
-        issue(dut, hn, 0, 5, 0, ChiOpcode.Req.ReadUnique)
+    simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
+      initialize(dut.io)
+      readLine(dut, hn, 2, 3, 0)
+      issue(dut, hn, 0, 4, 0, ChiOpcode.Req.WriteBackFull)
+      authorize(dut, hn, 0, 4)
+      copyBack(dut, hn, 0, BigInt(0), ChiResp.I)
+      for (_ <- 0 until 6) {
+        dut.io.reqTx.valid.expect(false.B)
+        dut.io.datTx.valid.expect(false.B)
+        dut.io.rspTx.valid.expect(false.B)
+        dut.clock.step()
       }
+      issue(dut, hn, 0, 5, 0, ChiOpcode.Req.ReadUnique)
+      expectSnoopRequest(dut.io, 2, hn.nodeId, 0)
     }
-    error.getMessage should include("requires snoop for another holder")
   }
 
   for ((field, wrongValue, message) <- Seq(

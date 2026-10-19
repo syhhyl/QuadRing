@@ -129,11 +129,13 @@ private[chi] object ChiNodeFixtures {
       val io = IO(new Bundle {
         val cancelledWriteback = Output(Bool())
         val memoryWrite = Output(Bool())
+        val memoryRead = Output(Bool())
       })
       val port = node.out.head._1
       io.cancelledWriteback := port.datRx.fire &&
         port.datRx.bits.opcode === ChiOpcode.Dat.CopyBackWrData && port.datRx.bits.resp === ChiResp.I
       io.memoryWrite := port.reqTx.fire && port.reqTx.bits.opcode === ChiOpcode.Req.WriteNoSnpFull
+      io.memoryRead := port.reqTx.fire && port.reqTx.bits.opcode === ChiOpcode.Req.ReadNoSnp
       io
     }
   }
@@ -161,8 +163,10 @@ private[chi] object ChiNodeFixtures {
     // Handshake observations for end-to-end loss/duplication and cancellation checks.
     val cancelledWriteback = IO(Output(Bool()))
     val memoryWrite = IO(Output(Bool()))
+    val memoryRead = IO(Output(Bool()))
     cancelledWriteback := outer.hn.transfers.cancelledWriteback
     memoryWrite := outer.hn.transfers.memoryWrite
+    memoryRead := outer.hn.transfers.memoryRead
   }
 }
 
@@ -265,6 +269,18 @@ private[chi] trait ChiNodeTestSupport extends ChiselSim { this: org.scalatest.Te
     rsp.resp.expect(ChiResp.I)
     rsp.dbID.expect(dbId.U)
     rsp.pCrdType.expect(0.U)
+  }
+
+  protected def expectSnoopRequest(port: ChiPort, target: Int, src: Int, address: BigInt,
+    opcode: UInt = ChiOpcode.Snp.SnpUnique): Unit = {
+    port.snpTx.valid.expect(true.B)
+    port.snpTx.bits.dst.expect(target.U)
+    port.snpTx.bits.payload.srcID.expect(src.U)
+    port.snpTx.bits.payload.txnID.expect(0.U)
+    port.snpTx.bits.payload.opcode.expect(opcode)
+    port.snpTx.bits.payload.addr.expect(address.U)
+    port.reqTx.valid.expect(false.B)
+    port.datTx.valid.expect(false.B)
   }
 
   protected def data(dat: DatFlit, target: Int, src: Int, txn: Int, value: BigInt): Unit = {

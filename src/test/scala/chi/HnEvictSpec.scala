@@ -114,18 +114,16 @@ class HnEvictSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
 
   for (otherAddress <- Seq(false, true)) {
     s"Evict preserves a holder belonging to another ${if (otherAddress) "address" else "RN"}" in {
-      val error = intercept[AssertionFailed] {
-        simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
-          initialize(dut.io)
-          readLine(dut, hn, 0, 3, 0)
-          issue(dut, hn, if (otherAddress) 0 else 2, 4,
-            if (otherAddress) BigInt(64) else BigInt(0), ChiOpcode.Req.Evict)
-          expectComp(dut, hn, if (otherAddress) 0 else 2, 4)
-          dut.clock.step()
-          issue(dut, hn, 2, 5, 0, ChiOpcode.Req.ReadUnique)
-        }
+      simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
+        initialize(dut.io)
+        readLine(dut, hn, 0, 3, 0)
+        issue(dut, hn, if (otherAddress) 0 else 2, 4,
+          if (otherAddress) BigInt(64) else BigInt(0), ChiOpcode.Req.Evict)
+        expectComp(dut, hn, if (otherAddress) 0 else 2, 4)
+        dut.clock.step()
+        issue(dut, hn, 2, 5, 0, ChiOpcode.Req.ReadUnique)
+        expectSnoopRequest(dut.io, 0, hn.nodeId, 0)
       }
-      error.getMessage should include("requires snoop for another holder")
     }
   }
 
@@ -178,28 +176,26 @@ class HnEvictSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
   }
 
   "a rejected Evict does not clear its holder before the credited retry" in {
-    val error = intercept[AssertionFailed] {
-      simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
-        val port = dut.io
-        initialize(port)
-        readLine(dut, hn, 0, 3, 0, acknowledge = false)
-        // Queue the competing read first so it gets credit before the Evict.
-        for ((src, txn, opcode) <- Seq(
-          (2, 4, ChiOpcode.Req.ReadUnique), (0, 5, ChiOpcode.Req.Evict))) {
-          issue(dut, hn, src, txn, 0, opcode)
-          port.rspTx.valid.expect(true.B)
-          expectResponse(port.rspTx.bits, src, hn.nodeId, txn, ChiOpcode.Rsp.RetryAck)
-          dut.clock.step()
-        }
-        ackRead(dut, hn, 0)
-        dut.clock.step()
+    simulate(LazyModule(new ChiNodeFixtures.Hn(config, hn)).module) { dut =>
+      val port = dut.io
+      initialize(port)
+      readLine(dut, hn, 0, 3, 0, acknowledge = false)
+      // Queue the competing read first so it gets credit before the Evict.
+      for ((src, txn, opcode) <- Seq(
+        (2, 4, ChiOpcode.Req.ReadUnique), (0, 5, ChiOpcode.Req.Evict))) {
+        issue(dut, hn, src, txn, 0, opcode)
         port.rspTx.valid.expect(true.B)
-        expectResponse(port.rspTx.bits, 2, hn.nodeId, 0, ChiOpcode.Rsp.PCrdGrant)
+        expectResponse(port.rspTx.bits, src, hn.nodeId, txn, ChiOpcode.Rsp.RetryAck)
         dut.clock.step()
-        issue(dut, hn, 2, 4, 0, ChiOpcode.Req.ReadUnique, credited = true)
       }
+      ackRead(dut, hn, 0)
+      dut.clock.step()
+      port.rspTx.valid.expect(true.B)
+      expectResponse(port.rspTx.bits, 2, hn.nodeId, 0, ChiOpcode.Rsp.PCrdGrant)
+      dut.clock.step()
+      issue(dut, hn, 2, 4, 0, ChiOpcode.Req.ReadUnique, credited = true)
+      expectSnoopRequest(dut.io, 0, hn.nodeId, 0)
     }
-    error.getMessage should include("requires snoop for another holder")
   }
 
   "reset cancels a blocked Evict completion and its retry waiter" in {
