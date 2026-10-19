@@ -41,6 +41,7 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   private val result = Reg(new RnResponse(params))
   private val requestOpcode = RegInit(ChiOpcode.Req.ReadNoSnp)
   private val victimAddress = Reg(UInt(params.addrWidth.W))
+  private val victimData = Reg(UInt(512.W))
   private val writeDbId = Reg(UInt(params.txnIdWidth.W))
   private val completionDbId = Reg(UInt(params.txnIdWidth.W))
   private val cacheValid = RegInit(VecInit(Seq.fill(outer.params.cacheLines)(false.B)))
@@ -69,6 +70,15 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
     request.addr(params.addrWidth - 1, 6 + cacheIndexWidth)
   } else 0.U(cacheTagWidth.W)
 
+  // Replacement and the original command are separate requests with independent retry credit.
+  private def resumeRequest(): Unit = {
+    requestOpcode := Mux(request.write, ChiOpcode.Req.ReadUnique, ChiOpcode.Req.ReadShared)
+    retryAckSeen := false.B
+    creditHeld := false.B
+    retried := false.B
+    state := sendReq
+  }
+
   io.request.ready := state === idle
   when(io.request.fire) {
     assert(io.request.bits.addr(5, 0) === 0.U, "RN requires line-aligned addresses")
@@ -92,11 +102,11 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
         requestOpcode := Mux(io.request.bits.write, ChiOpcode.Req.ReadUnique,
           ChiOpcode.Req.ReadShared)
         when(replace) {
-          assert(cacheStates(localCacheIndex) =/= RnCacheState.UD,
-            "RN dirty cache replacement requires WriteBackFull")
           victimAddress := Cat(cacheTags(localCacheIndex), localCacheIndex, 0.U(6.W))
-          requestOpcode := ChiOpcode.Req.Evict
-          // Drop clean permission before Evict; its address survives retries separately.
+          victimData := cacheData(localCacheIndex)
+          requestOpcode := Mux(cacheStates(localCacheIndex) === RnCacheState.UD,
+            ChiOpcode.Req.WriteBackFull, ChiOpcode.Req.Evict)
+          // Move the victim out of the cache; retain dirty data through retries and DAT backpressure.
           cacheValid(localCacheIndex) := false.B
           cacheStates(localCacheIndex) := RnCacheState.I
         }
@@ -124,7 +134,8 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   port.reqTx.bits.opcode := requestOpcode
   port.reqTx.bits.addr := request.addr
   if (outer.params.coherent) {
-    port.reqTx.bits.addr := Mux(requestOpcode === ChiOpcode.Req.Evict, victimAddress, request.addr)
+    port.reqTx.bits.addr := Mux(requestOpcode === ChiOpcode.Req.Evict ||
+      requestOpcode === ChiOpcode.Req.WriteBackFull, victimAddress, request.addr)
   }
   port.reqTx.bits.allowRetry := !retryReady
   when(port.reqTx.fire) {
@@ -134,7 +145,8 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
       retried := true.B
     }
     if (outer.params.coherent) {
-      state := Mux(requestOpcode === ChiOpcode.Req.Evict, waitComp, waitData)
+      state := Mux(requestOpcode === ChiOpcode.Req.Evict, waitComp,
+        Mux(requestOpcode === ChiOpcode.Req.WriteBackFull, waitDbId, waitData))
     } else {
       state := Mux(request.write, waitDbId, waitData)
     }
@@ -198,17 +210,20 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
       }
     }.otherwise {
       if (outer.params.coherent) {
-        assert(state === waitComp && !retryAckSeen && !creditHeld,
-          "RN expects Evict completion without a pending retry")
         assert(rsp.txnID === request.txnID, "RN received a response for another transaction")
-        assert(rsp.opcode === ChiOpcode.Rsp.Comp && rsp.resp === ChiResp.I &&
-          rsp.dbID === 0.U && rsp.pCrdType === 0.U, "RN expects Evict Comp with zero response fields")
-        // Evict and the following read are separate requests, each with its own retry credit.
-        requestOpcode := Mux(request.write, ChiOpcode.Req.ReadUnique, ChiOpcode.Req.ReadShared)
-        retryAckSeen := false.B
-        creditHeld := false.B
-        retried := false.B
-        state := sendReq
+        when(state === waitDbId) {
+          assert(!retryAckSeen && !creditHeld, "RN cannot complete a request awaiting retry")
+          assert(rsp.opcode === ChiOpcode.Rsp.CompDBIDResp && rsp.resp === ChiResp.I &&
+            rsp.pCrdType === 0.U, "RN expects WriteBackFull CompDBIDResp")
+          writeDbId := rsp.dbID
+          state := sendWriteData
+        }.otherwise {
+          assert(state === waitComp && !retryAckSeen && !creditHeld,
+            "RN expects Evict completion without a pending retry")
+          assert(rsp.opcode === ChiOpcode.Rsp.Comp && rsp.resp === ChiResp.I &&
+            rsp.dbID === 0.U && rsp.pCrdType === 0.U, "RN expects Evict Comp with zero response fields")
+          resumeRequest()
+        }
       } else {
       assert(rsp.txnID === request.txnID, "RN received a response for another transaction")
       assert(state === waitDbId && !retryAckSeen && !creditHeld,
@@ -230,10 +245,19 @@ class RnNodeModule(outer: RnNode) extends LazyModuleImp(outer) {
   port.datTx.bits.opcode := ChiOpcode.Dat.NonCopyBackWrData
   port.datTx.bits.resp := ChiResp.I
   port.datTx.bits.data := request.data
+  if (outer.params.coherent) {
+    port.datTx.bits.opcode := ChiOpcode.Dat.CopyBackWrData
+    port.datTx.bits.resp := ChiResp.UD_PD
+    port.datTx.bits.data := victimData
+  }
   when(port.datTx.fire) {
-    result.txnID := request.txnID
-    result.data := 0.U
-    state := returnResult
+    if (outer.params.coherent) {
+      resumeRequest()
+    } else {
+      result.txnID := request.txnID
+      result.data := 0.U
+      state := returnResult
+    }
   }
 
   port.rspTx.valid := (if (outer.params.coherent) state === sendCompAck else false.B)

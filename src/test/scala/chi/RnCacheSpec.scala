@@ -193,26 +193,6 @@ class RnCacheSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
     error.getMessage should include("ReadUnique requires unique permission")
   }
 
-  "a conflicting dirty cache address still requires WriteBackFull" in {
-    val error = intercept[AssertionFailed] {
-      simulate(LazyModule(new ChiNodeFixtures.Rn(config, rn)).module) { dut =>
-        val local = dut.io.local
-        initialize(local)
-        initialize(dut.io.network)
-        localWriteRequest(local, 1, 0, lines.head)
-        dut.clock.step()
-        local.request.valid.poke(false)
-        dut.clock.step()
-        completeDataRead(dut, 0, 1, lines.head, ChiResp.UC)
-        local.response.ready.poke(true)
-        dut.clock.step()
-        localRequest(local, 2, BigInt(rn.cacheLines * 64))
-        dut.clock.step()
-      }
-    }
-    error.getMessage should include("dirty cache replacement requires WriteBackFull")
-  }
-
   "cache parameters require a power-of-two line count" in {
     an[IllegalArgumentException] should be thrownBy RnParams(cacheLines = 3)
   }
