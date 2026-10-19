@@ -32,7 +32,7 @@ private[chi] object CoherentReference {
   }
 }
 
-/** Black-box coherent data checks; neither ordering nor expected data comes from HN state. */
+/** Data is checked at local ports; independent hardware assertions check actual ownership. */
 class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
   import CoherentReference._
   private implicit val p: Parameters = Parameters.empty
@@ -87,7 +87,7 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
 
   for ((params, seed) <- cases) {
     s"seed $seed checks $runCycles coherent cycles with ${params.network.chi}" in {
-      simulate(LazyModule(new ChiSystem(params)).module) { dut =>
+      simulate(LazyModule(new OwnershipCheckedSystem(params)).module) { dut =>
         val ports = Seq(dut.io.rn0, dut.io.rn1)
         ports.foreach(initialize)
         val random = new Random(seed)
