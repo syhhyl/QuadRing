@@ -41,8 +41,11 @@ Each channel uses this topology in the four-node configuration:
     +----------------+                +----------------+
 ```
 
-The ring core is validated with routing and recovery tests plus 500,000 randomized simulation cycles.
-CHI transport tests cover node ID mapping, all source/destination pairs, and backpressure.
+The ring core and the non-coherent two-RN system each pass 500,000 randomized
+simulation cycles. System tests compare reads and writes with a reference memory
+and check backpressure, transaction IDs, loss, duplication, and completion.
+Coherent operation is covered by directed tests. CHI transport tests cover node ID
+mapping, all source/destination pairs, and backpressure.
 
 Requires JDK 21, Verilator, a C++ compiler, and Make.
 
