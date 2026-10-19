@@ -2,6 +2,8 @@
 
 Ring interconnect implemented in Chisel and Scala. Built with Mill.
 
+See [Design](docs/design.md) for architecture and transaction behavior.
+
 Supports four independent unidirectional rings with configurable node count,
 buffer depth, and payload types. Nodes can inject messages, route them by destination,
 and receive them through valid/ready interfaces. Credit and bubble flow control
