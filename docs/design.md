@@ -30,6 +30,9 @@ direction. Physical positions follow connection order in
 [ChiSystem.scala](../src/main/scala/chi/ChiSystem.scala). Default node IDs equal these
 positions, but sparse or permuted IDs are supported.
 
+The combined Diplomacy and physical topology is available as [Graphviz DOT](diplomacy-topology.dot),
+[SVG](diplomacy-topology.svg), and [PNG](diplomacy-topology.png).
+
 | Layer | Responsibility | Entry file |
 |---|---|---|
 | `RingStop` / `Ring` / `QuadRing` | Buffer, route by physical `dst`, and control injection | [RingStop.scala](../src/main/scala/noc/RingStop.scala) |
