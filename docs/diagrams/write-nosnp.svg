@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1844" viewBox="0 0 960 1844" role="img" aria-labelledby="title desc">
+<title id="title">Physical ring: write-nosnp</title>
+<desc id="desc">Read panels left to right, top to bottom. Each panel shows one flit on a clockwise four-stop ring. Colored edges and numbered hops show its full route; gray edges are unused. Panels express protocol dependencies, not cycles.</desc>
+<defs>
+<marker id="REQ" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#2563eb"/></marker>
+<marker id="RSP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#15803d"/></marker>
+<marker id="SNP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#c45c06"/></marker>
+<marker id="DAT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#dc2626"/></marker>
+<marker id="idle" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#cbd5e1"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<g font-family="DejaVu Sans,Arial,sans-serif">
+<text x="480" y="25" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">REQ: blue   RSP: green   SNP: orange   DAT: red  |  1,2,3 = hops</text>
+<g transform="translate(0,36)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#2563eb" font-weight="bold" text-anchor="middle">01  REQ / channel0</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">WriteNoSnpFull</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=t; addr=A; allowRetry=1</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#2563eb" stroke-width="5" marker-end="url(#REQ)"/>
+<circle cx="235" cy="111" r="11" fill="#2563eb"/>
+<text x="235" y="115" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#2563eb" stroke="#2563eb"/>
+<text x="129" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#2563eb" font-weight="normal" text-anchor="middle">inject</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#2563eb" stroke="#2563eb"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#2563eb" font-weight="normal" text-anchor="middle">eject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="341" y="308" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="129" y="308" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<text x="235" y="224" font-size="17" fill="#2563eb" font-weight="bold" text-anchor="middle">REQ ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 1</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=0   tgtID=1</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop0 → Stop1</text>
+</g>
+<g transform="translate(480,36)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#15803d" font-weight="bold" text-anchor="middle">02  RSP / channel1</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">CompDBIDResp</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=t; dbID=dH=0</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="395" cy="230" r="11" fill="#15803d"/>
+<text x="395" y="234" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="235" cy="352" r="11" fill="#15803d"/>
+<text x="235" y="356" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">2</text>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="75" cy="230" r="11" fill="#15803d"/>
+<text x="75" y="234" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">3</text>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="129" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">eject</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">inject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="341" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">forward</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="129" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">forward</text>
+<text x="235" y="224" font-size="17" fill="#15803d" font-weight="bold" text-anchor="middle">RSP ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 0</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=1   tgtID=0</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop1 → Stop2 → Stop3 → Stop0</text>
+</g>
+<g transform="translate(0,486)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#dc2626" font-weight="bold" text-anchor="middle">03  DAT / channel3</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">NonCopyBackWrData</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=dH=0; resp=I; data=D</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#dc2626" stroke-width="5" marker-end="url(#DAT)"/>
+<circle cx="235" cy="111" r="11" fill="#dc2626"/>
+<text x="235" y="115" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#dc2626" stroke="#dc2626"/>
+<text x="129" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#dc2626" font-weight="normal" text-anchor="middle">inject</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#dc2626" stroke="#dc2626"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#dc2626" font-weight="normal" text-anchor="middle">eject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="341" y="308" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="129" y="308" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<text x="235" y="224" font-size="17" fill="#dc2626" font-weight="bold" text-anchor="middle">DAT ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 1</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=0   tgtID=1</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop0 → Stop1</text>
+</g>
+<g transform="translate(480,486)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#2563eb" font-weight="bold" text-anchor="middle">04  REQ / channel0</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">WriteNoSnpFull</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=h=0; addr=A</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#2563eb" stroke-width="5" marker-end="url(#REQ)"/>
+<circle cx="395" cy="230" r="11" fill="#2563eb"/>
+<text x="395" y="234" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#2563eb" stroke-width="5" marker-end="url(#REQ)"/>
+<circle cx="235" cy="352" r="11" fill="#2563eb"/>
+<text x="235" y="356" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">2</text>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="129" y="146" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#2563eb" stroke="#2563eb"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#2563eb" font-weight="normal" text-anchor="middle">inject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#2563eb" stroke="#2563eb"/>
+<text x="341" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#2563eb" font-weight="normal" text-anchor="middle">forward</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#2563eb" stroke="#2563eb"/>
+<text x="129" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#2563eb" font-weight="normal" text-anchor="middle">eject</text>
+<text x="235" y="224" font-size="17" fill="#2563eb" font-weight="bold" text-anchor="middle">REQ ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 3</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=1   tgtID=3</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop1 → Stop2 → Stop3</text>
+</g>
+<g transform="translate(0,936)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#15803d" font-weight="bold" text-anchor="middle">05  RSP / channel1</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">DBIDResp</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=h=0; dbID=dS=0</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="235" cy="111" r="11" fill="#15803d"/>
+<text x="235" y="115" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">2</text>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="75" cy="230" r="11" fill="#15803d"/>
+<text x="75" y="234" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="129" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">forward</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">eject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="341" y="308" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="129" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">inject</text>
+<text x="235" y="224" font-size="17" fill="#15803d" font-weight="bold" text-anchor="middle">RSP ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 1</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=3   tgtID=1</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop3 → Stop0 → Stop1</text>
+</g>
+<g transform="translate(480,936)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#dc2626" font-weight="bold" text-anchor="middle">06  DAT / channel3</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">NonCopyBackWrData</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=dS=0; resp=I; data=D</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#dc2626" stroke-width="5" marker-end="url(#DAT)"/>
+<circle cx="395" cy="230" r="11" fill="#dc2626"/>
+<text x="395" y="234" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#dc2626" stroke-width="5" marker-end="url(#DAT)"/>
+<circle cx="235" cy="352" r="11" fill="#dc2626"/>
+<text x="235" y="356" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">2</text>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="129" y="146" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#dc2626" stroke="#dc2626"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#dc2626" font-weight="normal" text-anchor="middle">inject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#dc2626" stroke="#dc2626"/>
+<text x="341" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#dc2626" font-weight="normal" text-anchor="middle">forward</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#dc2626" stroke="#dc2626"/>
+<text x="129" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#dc2626" font-weight="normal" text-anchor="middle">eject</text>
+<text x="235" y="224" font-size="17" fill="#dc2626" font-weight="bold" text-anchor="middle">DAT ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 3</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=1   tgtID=3</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop1 → Stop2 → Stop3</text>
+</g>
+<g transform="translate(0,1386)">
+<rect x="8" y="5" width="464" height="436" rx="12" fill="#fff" stroke="#cbd5e1"/>
+<text x="240" y="32" font-size="16" fill="#15803d" font-weight="bold" text-anchor="middle">07  RSP / channel1</text>
+<text x="240" y="57" font-size="20" fill="#0f172a" font-weight="bold" text-anchor="middle">Comp</text>
+<text x="240" y="79" font-size="12" fill="#334155" font-weight="normal" text-anchor="middle">txnID=h=0; dbID=dS=0</text>
+<path d="M 179 126 C 215 102 255 102 291 126" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="235" cy="111" r="11" fill="#15803d"/>
+<text x="235" y="115" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">2</text>
+<path d="M 369 173 C 404 204 404 256 369 287" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 291 334 C 255 358 215 358 179 334" fill="none" stroke="#cbd5e1" stroke-width="2" marker-end="url(#idle)"/>
+<path d="M 101 287 C 66 256 66 204 101 173" fill="none" stroke="#15803d" stroke-width="5" marker-end="url(#RSP)"/>
+<circle cx="75" cy="230" r="11" fill="#15803d"/>
+<text x="75" y="234" font-size="12" fill="#fff" font-weight="bold" text-anchor="middle">1</text>
+<rect x="77" y="125" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="129" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">RN0</text>
+<text x="129" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop0</text>
+<text x="129" y="192" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">forward</text>
+<rect x="289" y="125" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="341" y="146" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">HN</text>
+<text x="341" y="164" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop1</text>
+<text x="341" y="192" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">eject</text>
+<rect x="289" y="287" width="104" height="48" rx="16" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="341" y="308" font-size="17" fill="#475569" font-weight="bold" text-anchor="middle">RN1</text>
+<text x="341" y="326" font-size="12" fill="#64748b" font-weight="normal" text-anchor="middle">Stop2</text>
+<text x="341" y="275" font-size="12" fill="#94a3b8" font-weight="normal" text-anchor="middle">idle</text>
+<rect x="77" y="287" width="104" height="48" rx="16" fill="#15803d" stroke="#15803d"/>
+<text x="129" y="308" font-size="17" fill="#fff" font-weight="bold" text-anchor="middle">SN</text>
+<text x="129" y="326" font-size="12" fill="#fff" font-weight="normal" text-anchor="middle">Stop3</text>
+<text x="129" y="275" font-size="12" fill="#15803d" font-weight="normal" text-anchor="middle">inject</text>
+<text x="235" y="224" font-size="17" fill="#15803d" font-weight="bold" text-anchor="middle">RSP ring</text>
+<text x="235" y="248" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">RingFlit.dst = 1</text>
+<text x="240" y="399" font-size="13" fill="#334155" font-weight="normal" text-anchor="middle">srcID=3   tgtID=1</text>
+<text x="240" y="423" font-size="14" fill="#334155" font-weight="normal" text-anchor="middle">Stop3 → Stop0 → Stop1</text>
+</g>
+</g>
+</svg>
