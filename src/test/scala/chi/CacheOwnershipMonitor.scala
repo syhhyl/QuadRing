@@ -34,18 +34,13 @@ private[chi] class CacheOwnershipMonitor(addrWidth: Int, cacheLines: Int) extend
   }
 }
 
-/** Observe existing product registers with read-only probes, only in this test fixture. */
-private[chi] class OwnershipCheckedSystem(config: ChiSystemParams)(implicit p: Parameters)
-  extends ChiSystem({
-    require(config.coherent, "ownership checks require coherent mode")
-    config
-  }) {
-  val ownership = InModuleBody {
-    val addrWidth = config.network.chi.addrWidth
-    val cacheLines = config.cacheLines
+/** Read-only RN cache/victim probes shared by product and fixture ownership checks. */
+private[chi] object OwnershipObservation {
+  def attach(rns: Seq[RnNode], cacheLines: Int, addrWidth: Int): Vec[Vec[OwnershipEntry]] = {
+    require(rns.size == 2, "ownership checks require two RNs")
     val indexWidth = log2Ceil(cacheLines)
-    val observed = IO(Output(Vec(2, Vec(cacheLines + 1, new OwnershipEntry(addrWidth)))))
-    for ((rn, index) <- Seq(rn0, rn1).zipWithIndex) {
+    val observed = IO(Output(Vec(rns.size, Vec(cacheLines + 1, new OwnershipEntry(addrWidth)))))
+    for ((rn, index) <- rns.zipWithIndex) {
       val registers = Select.registers(rn.module)
       def read(name: String): Data = {
         val matches = registers.filter(_.instanceName == name)
@@ -72,5 +67,25 @@ private[chi] class OwnershipCheckedSystem(config: ChiSystemParams)(implicit p: P
     val monitor = Module(new CacheOwnershipMonitor(addrWidth, cacheLines))
     monitor.io := observed
     observed
+  }
+}
+
+/** Observe existing product registers with read-only probes, only in this test fixture. */
+private[chi] class OwnershipCheckedSystem(config: ChiSystemParams)(implicit p: Parameters)
+  extends ChiSystem({
+    require(config.coherent, "ownership checks require coherent mode")
+    config
+  }) {
+  val ownership = InModuleBody {
+    OwnershipObservation.attach(Seq(rn0, rn1), config.cacheLines, config.network.chi.addrWidth)
+  }
+}
+
+/** The same ownership checks around the endpoint fixture used by forced cancellation races. */
+private[chi] class OwnershipCheckedCoherentSystem(config: ChiNoCParams, ids: Seq[Int],
+  initialLines: Seq[BigInt], cacheLines: Int)(implicit p: Parameters)
+  extends ChiNodeFixtures.CoherentSystem(config, ids, initialLines, cacheLines) {
+  val ownership = InModuleBody {
+    OwnershipObservation.attach(Seq(rn0, rn1), cacheLines, config.chi.addrWidth)
   }
 }

@@ -105,7 +105,7 @@ class ChiUniqueReadSpec extends AnyFreeSpec with Matchers with ChiNodeTestSuppor
     }
 
     s"unique request races dirty replacement without duplicate writes with IDs $ids" in {
-      simulate(LazyModule(new ChiNodeFixtures.CoherentSystem(config, ids, memory, cacheLines)).module) { dut =>
+      simulate(LazyModule(new OwnershipCheckedCoherentSystem(config, ids, memory, cacheLines)).module) { dut =>
         var totalCancellations = 0
         for (delay <- 0 until 5) {
           dut.io.foreach(initialize)

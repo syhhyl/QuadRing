@@ -36,7 +36,42 @@ private[chi] object CoherentReference {
 class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSupport {
   import CoherentReference._
   private implicit val p: Parameters = Parameters.empty
-  private case class Command(rn: Int, line: Int, write: Boolean, data: BigInt, txn: BigInt)
+  private case class Command(rn: Int, line: Int, write: Boolean, data: BigInt, txn: BigInt,
+    payloadKind: Option[Int])
+
+  private class CommandGenerator(txnWidth: Int, random: Random) {
+    private val txnMask = (BigInt(1) << txnWidth) - 1
+    private val writeCounts = Array.fill(2)(0)
+    private var nextTxn = BigInt(0)
+
+    private def allocateTxn(): BigInt = {
+      val txn = nextTxn & txnMask
+      nextTxn += 1
+      txn
+    }
+
+    private def makeCommand(rn: Int, line: Int, write: Boolean, txn: BigInt): Command = {
+      val pattern = Option.when(write)(writeCounts(rn) % 4)
+      val value = pattern match {
+        case Some(0) => BigInt(0)
+        case Some(1) => mask
+        case Some(2) => BigInt(1) << 511
+        case Some(3) => BigInt(512, random)
+        case _ => BigInt(0)
+      }
+      if (write) writeCounts(rn) += 1
+      Command(rn, line, write, value, txn, pattern)
+    }
+
+    def command(rn: Int, line: Int, write: Boolean): Command =
+      makeCommand(rn, line, write, allocateTxn())
+
+    def pair(line0: Int, line1: Int, write0: Boolean, write1: Boolean, sameTxn: Boolean): Seq[Command] = {
+      val txn = allocateTxn()
+      Seq(makeCommand(0, line0, write0, txn),
+        makeCommand(1, line1, write1, if (sameTxn) txn else (txn + 1) & txnMask))
+    }
+  }
   private val longRun = sys.env.get("QUADRING_LONG_TESTS") match {
     case None | Some("0") => false
     case Some("1") => true
@@ -85,6 +120,41 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
     possibleValues(Set(BigInt(0)), Seq(read.copy(result = 0), read)) shouldBe empty
   }
 
+  "stimulus covers each RN's payloads and both ID relationships after a singleton" in {
+    for (width <- Seq(1, 4)) {
+      val generator = new CommandGenerator(width, new Random(1L))
+      generator.command(0, 0, write = false)
+      val batches = (0 until 8).map { index =>
+        generator.command(index % 2, 0, write = false)
+        generator.pair(0, 0, write0 = true, write1 = true, sameTxn = index % 2 == 0)
+      }
+      for (rn <- 0 until 2) {
+        val writes = batches.map(_(rn))
+        writes.flatMap(_.payloadKind) shouldBe Seq(0, 1, 2, 3, 0, 1, 2, 3)
+        writes.foreach { cmd =>
+          cmd.payloadKind.get match {
+            case 0 => cmd.data shouldBe BigInt(0)
+            case 1 => cmd.data shouldBe mask
+            case 2 => cmd.data shouldBe (BigInt(1) << 511)
+            case _ => cmd.data should (be >= BigInt(0) and be <= mask)
+          }
+        }
+      }
+      for ((batch, index) <- batches.zipWithIndex) {
+        (batch.head.txn == batch(1).txn) shouldBe (index % 2 == 0)
+        batch.foreach(cmd => cmd.txn should (be >= BigInt(0) and be < (BigInt(1) << width)))
+      }
+      for (paired <- Seq(false, true)) {
+        val wrapping = new CommandGenerator(width, new Random(1L))
+        val ids = (0 to (1 << width)).map { _ =>
+          if (paired) wrapping.pair(0, 0, write0 = false, write1 = false, sameTxn = true).head.txn
+          else wrapping.command(0, 0, write = false).txn
+        }
+        ids shouldBe ((0 until (1 << width)).map(BigInt(_)) :+ BigInt(0))
+      }
+    }
+  }
+
   for ((params, seed) <- cases) {
     s"seed $seed checks $runCycles coherent cycles with ${params.network.chi}" in {
       val top = LazyModule(new ProtocolCheckedSystem(params))
@@ -96,30 +166,18 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
         val random = new Random(seed)
         // Different lines commute. For one line, preserve all orders compatible with history.
         val reference = params.initialLines.map(value => Set(value)).toArray
-        val txnMask = (BigInt(1) << params.network.chi.txnIdWidth) - 1
-        val sameLineKinds = mutable.Set.empty[(Boolean, Boolean)]
+        val generator = new CommandGenerator(params.network.chi.txnIdWidth, random)
+        import generator.{command, pair}
+        val acceptedSameLineKinds = mutable.Set.empty[(Boolean, Boolean)]
+        val overlappingSameLineKinds = mutable.Set.empty[(Boolean, Boolean)]
+        val acceptedTxnRelations = mutable.Set.empty[Boolean]
+        val overlappingTxnRelations = mutable.Set.empty[Boolean]
         val addressed = mutable.Set.empty[Int]
-        val payloadKinds = mutable.Set.empty[Int]
+        val payloadKinds = Array.fill(2)(mutable.Set.empty[Int])
         var cycle = 0
-        var commandCount = 0
         var acceptedCount = 0
         var completedCount = 0
-        var overlappingConflict = false
         var peerCompletedWhileBlocked = false
-
-        def command(rn: Int, line: Int, write: Boolean): Command = {
-          val pattern = commandCount % 4
-          val value = pattern match {
-            case 0 => BigInt(0)
-            case 1 => mask
-            case 2 => BigInt(1) << 511
-            case _ => BigInt(512, random)
-          }
-          if (write) payloadKinds += pattern
-          val result = Command(rn, line, write, value, BigInt(commandCount / 2) & txnMask)
-          commandCount += 1
-          result
-        }
 
         def step(): Unit = {
           dut.clock.step()
@@ -157,6 +215,7 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
                 acceptedAt(rn) = cycle
                 acceptedCount += 1
                 addressed += byRn(rn).get.line
+                byRn(rn).get.payloadKind.foreach(kind => payloadKinds(rn) += kind)
                 lastProgress = cycle
               }
               val current = if (port.response.valid.peekBoolean()) {
@@ -198,9 +257,16 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
               s"initial=${reference(line)} history=$history")
             reference(line) = possible
           }
-          if (commands.size == 2 && histories.size == 1) {
-            sameLineKinds += ((byRn(0).get.write, byRn(1).get.write))
-            if (acceptedAt.max < visibleAt.min) overlappingConflict = true
+          if (commands.size == 2) {
+            val overlaps = acceptedAt.max < visibleAt.min
+            val sameTxn = byRn(0).get.txn == byRn(1).get.txn
+            acceptedTxnRelations += sameTxn
+            if (overlaps) overlappingTxnRelations += sameTxn
+            if (histories.size == 1) {
+              val kind = (byRn(0).get.write, byRn(1).get.write)
+              acceptedSameLineKinds += kind
+              if (overlaps) overlappingSameLineKinds += kind
+            }
           }
           acceptedCount shouldBe completedCount
         }
@@ -208,23 +274,41 @@ class ChiCoherentRandomSpec extends AnyFreeSpec with Matchers with ChiNodeTestSu
         println(s"[ChiCoherentRandomSpec] seed=$seed cycles=$runCycles: start")
         runBatch(Seq(command(0, 0, write = false)))
         // A cached result stays blocked while the peer invalidates its line and finishes a write.
-        runBatch(Seq(command(0, 0, write = false), command(1, 0, write = true)),
+        runBatch(pair(0, 0, write0 = false, write1 = true, sameTxn = true),
           delays = Seq(0, 4), holds = Seq(64, 0))
-        runBatch(Seq(command(0, 0, write = false), command(1, 0, write = false)))
-        runBatch(Seq(command(0, 0, write = true), command(1, 0, write = true)))
-        runBatch(Seq(command(0, 0, write = true), command(1, 0, write = false)))
+        runBatch(pair(0, 0, write0 = false, write1 = false, sameTxn = true))
+        runBatch(pair(0, 0, write0 = true, write1 = true, sameTxn = false))
+        runBatch(pair(0, 0, write0 = true, write1 = false, sameTxn = true))
+        runBatch(pair(0, 0, write0 = false, write1 = true, sameTxn = false))
+        // Guarantee every RN's write patterns without relying on the random tail.
+        for (index <- 0 until 4) {
+          runBatch(pair(0, 0, write0 = true, write1 = true, sameTxn = index % 2 == 0))
+        }
 
         while (cycle < runCycles) {
           val first = random.nextInt(reference.length)
           val second = if (random.nextBoolean()) first else random.nextInt(reference.length)
-          runBatch(Seq(command(0, first, random.nextBoolean()), command(1, second, random.nextBoolean())),
+          runBatch(pair(first, second, random.nextBoolean(), random.nextBoolean(), random.nextBoolean()),
             delays = Seq(random.nextInt(17), random.nextInt(17)),
             holds = Seq(random.nextInt(17), random.nextInt(17)))
         }
-        sameLineKinds.toSet shouldBe Set((false, false), (false, true), (true, false), (true, true))
+        val accessKinds = Set((false, false), (false, true), (true, false), (true, true))
+        withClue(s"seed=$seed params=$params accepted same-line kinds: ") {
+          acceptedSameLineKinds.toSet shouldBe accessKinds
+        }
+        withClue(s"seed=$seed params=$params overlapping same-line kinds: ") {
+          overlappingSameLineKinds.toSet shouldBe accessKinds
+        }
+        withClue(s"seed=$seed params=$params same/different txnID coverage (true=same): ") {
+          acceptedTxnRelations.toSet shouldBe Set(false, true)
+          overlappingTxnRelations.toSet shouldBe Set(false, true)
+        }
+        for (rn <- 0 until 2) {
+          withClue(s"seed=$seed params=$params RN$rn accepted write payload kinds: ") {
+            payloadKinds(rn).toSet shouldBe Set(0, 1, 2, 3)
+          }
+        }
         addressed.toSet shouldBe reference.indices.toSet
-        payloadKinds.toSet shouldBe Set(0, 1, 2, 3)
-        overlappingConflict shouldBe true
         peerCompletedWhileBlocked shouldBe true
 
         // The first read resolves ambiguous overlapping writes; the peer must then agree exactly.

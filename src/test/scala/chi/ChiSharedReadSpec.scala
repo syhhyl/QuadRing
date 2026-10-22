@@ -107,7 +107,7 @@ class ChiSharedReadSpec extends AnyFreeSpec with Matchers with ChiNodeTestSuppor
     }
 
     s"shared read and dirty replacement preserve data across retry with IDs $ids" in {
-      simulate(LazyModule(new ChiNodeFixtures.CoherentSystem(config, ids, memory, cacheLines)).module) { dut =>
+      simulate(LazyModule(new OwnershipCheckedCoherentSystem(config, ids, memory, cacheLines)).module) { dut =>
         var totalCancellations = 0
         // Stagger the two local requests to exercise either winner at HN admission.
         for (delay <- 0 until 5) {
