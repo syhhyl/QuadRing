@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build and validation
 
-Use Mill from the repository root, with JDK 21, Verilator, a C++ compiler, and Make. `./mill` bootstraps the pinned Mill version. The shared toolchain in `build.mill` is Scala 2.13.17 / Chisel 7.13.0; `QuadRing` contains project designs and tests, while `diplomacyLib` compiles the pinned Diplomacy and CDE submodules from source.
+Use Mill from the repository root, with JDK 21, Verilator, a C++ compiler, and Make. `./mill` bootstraps the pinned Mill version.
 
 ```bash
 # Initialize dependencies
@@ -13,12 +13,6 @@ git submodule update --init --recursive
 # Compile / run all tests
 ./mill QuadRing.compile
 ./mill QuadRing.test
-
-# Run a single existing suite
-./mill QuadRing.test.testOnly noc.RingStopSpec
-./mill QuadRing.test.testOnly chi.ChiNoCSpec
-./mill QuadRing.test.testOnly chi.ChiCoherentSystemSpec
-./mill QuadRing.test.testOnly chi.RetryAdmissionSpec
 
 # Full regression: compile, test, generate four RTL targets, Verilator lint
 ./test.sh
@@ -49,12 +43,6 @@ Preserve `.mill-jvm-opts`, especially `-Dchisel.project.root=${PWD}`, and the co
 Start with `docs/design.md` for the implemented architecture, transaction sequences, completion boundaries, and progress assumptions. `README.md` provides the overview. `PLAN.md` and `docs/protocol.md` are ignored local documents and may retain historical draft tasks; reconcile those with current source/design documentation before implementing changes.
 
 ### Transport versus protocol
-
-The design has three layers:
-
-1. **Generic transport (`src/main/scala/noc/`)**: `RingStop` buffers incoming ring traffic and arbitrates forwarding versus local injection. `Ring` connects stops into a unidirectional ring; `QuadRing` instantiates four independent rings with generic payloads. Transport routes by physical destination index and does not interpret CHI opcodes.
-2. **CHI adaptation (`src/main/scala/chi/ChiNode.scala`, `ChiPort.scala`, `ChiNoC.scala`)**: Diplomacy negotiates endpoint identity/role and flit/ring parameters, then maps logical CHI node IDs to physical ring positions. REQ, RSP, SNP, and DAT each use a separate ring. SNP has an explicit routing destination outside its payload; the other channels use `tgtID`.
-3. **Transaction endpoints (`RnNode.scala`, `HnNode.scala`, `SnNode.scala`)**: RN accepts local commands and owns cache/replacement/retry logic; HN serializes transactions, manages the directory and snoops, and mediates memory access; SN holds reset-initialized whole-line memory. `ChiSystem.scala` assembles two RNs, one HN, and one SN in physical order **RN0 → HN → RN1 → SN → RN0**.
 
 Diplomacy SourceNode/SinkNode names describe parameter flow, not unidirectional hardware traffic: each endpoint edge carries TX and RX for all four channels. Connections use `network.node := endpoint.node`; connection order determines physical position, independently of CHI IDs. Sparse/permuted IDs are supported, duplicates fail elaboration, and transmitting to an unknown ID asserts. Check pinned local Diplomacy APIs/examples before changing negotiation or port wiring.
 
