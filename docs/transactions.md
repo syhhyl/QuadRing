@@ -1,13 +1,14 @@
-# QuadRing 事务能力说明
+# QuadRing 事务与一致性说明
 
-本文按“当前实现能发生哪些事务”组织，而不是按通用 CHI 条目逐条介绍。所有结论以 `src/main/scala` 为准；图只表示消息路径和因果顺序，不表示时钟周期。
+本文合并了能力参考和按真实请求的走读：先给能力表和实现约定，再按 RN0/RN1 的本地命令展开一致性路径，最后给端点状态机、完成边界、断言和验证入口。所有结论以 `src/main/scala` 为准；图只表示消息路径和因果顺序，不表示时钟周期。
+
+本文只描述 `coherent = true` 的配置。`ReadNoSnp` 和 `WriteNoSnpFull` 仅作为 HN 访问 SN 的内部请求出现，不作为 RN 的事务形态讨论。
 
 先给结论：
 
-- 默认配置 `coherent=false`：只有整行读 `ReadNoSnp` 和整行写 `WriteNoSnpFull` 两种事务。
-- 打开 `coherent=true`：RN 增加直接映射 cache，HN 增加目录；系统真正会发出的 REQ 只有 `ReadShared`、`ReadUnique`、`Evict`、`WriteBackFull` 四个。
-- HN 端点跨配置共接受六个 REQ opcode；实际系统按配置使用 2 个或 4 个。SN 只接受 `ReadNoSnp` 和 `WriteNoSnpFull`。
-- 所有网络事务数据都经过 HN；没有 DMT、没有 RN↔RN 直接传输、没有转发 snoop。
+- 系统运行 `coherent = true`：RN 有直接映射 cache，HN 有目录；产品 RN 真正发出的 REQ 只有 `ReadShared`、`ReadUnique`、`Evict`、`WriteBackFull` 四个。
+- HN 端点接受六个 REQ opcode（额外两个是 `ReadNoSnp`/`WriteNoSnpFull`），SN 只接受这两个；系统的下行访问由 HN 发起。
+- 所有数据都经过 HN；没有 DMT、没有 RN↔RN 直接传输、没有转发 snoop。
 - 每个 RN 一笔本地命令；HN 一笔活动事务；SN 一次内存操作。并发靠 HN 串行化和 retry 排队。
 - 本地 cache 命中不产生任何 Ring flit。
 
@@ -15,29 +16,27 @@
 
 ### 0.1 CPU 可见能力
 
-| 配置 | 本地命令 | 条件 | 线上事务 | 本地结果 |
-|---|---|---|---|---|
-| 非一致 | 读 | 总是 | `ReadNoSnp` | 收到的整行 |
-| 非一致 | 写 | 总是 | `WriteNoSnpFull` | 0，写 DAT 注入后即可取 |
-| 一致 | 读 | cache 命中 SC/UC/UD | 无 | cache 数据 |
-| 一致 | 写 | cache 命中 UC/UD | 无 | 0 |
-| 一致 | 写 | cache 命中 SC | `ReadUnique` | 0 |
-| 一致 | 读 | cache miss | `ReadShared` | 返回的整行 |
-| 一致 | 写 | cache miss | `ReadUnique` | 0 |
-| 一致 | 任意 | 同索引有 victim | 先 `Evict` 或 `WriteBackFull` | victim 阶段结束后再发原命令 |
+| 本地命令 | 条件 | 线上事务 | 本地结果 |
+|---|---|---|---|
+| 读 | cache 命中 SC/UC/UD | 无 | cache 数据 |
+| 写 | cache 命中 UC/UD | 无 | 0 |
+| 写 | cache 命中 SC | `ReadUnique` | 0 |
+| 读 | cache miss | `ReadShared` | 返回的整行 |
+| 写 | cache miss | `ReadUnique` | 0 |
+| 任意 | 同索引有 victim | 先 `Evict` 或 `WriteBackFull` | victim 阶段结束后再发原命令 |
 
 ### 0.2 线上 opcode
 
 | 通道 | opcode | 方向 | 系统何时使用 |
 |---|---|---|---|
-| REQ | `ReadNoSnp` | RN→HN；HN→SN | 非一致读；HN 读 SN |
-| REQ | `WriteNoSnpFull` | RN→HN；HN→SN | 非一致写；HN 写 SN |
-| REQ | `ReadShared` | RN→HN | 一致读 miss |
-| REQ | `ReadUnique` | RN→HN | 一致写 miss 或 SC 命中 |
+| REQ | `ReadNoSnp` | HN→SN | HN 读内存 |
+| REQ | `WriteNoSnpFull` | HN→SN | HN 写内存 |
+| REQ | `ReadShared` | RN→HN | 读 miss |
+| REQ | `ReadUnique` | RN→HN | 写 miss 或 SC 命中升级 |
 | REQ | `Evict` | RN→HN | 干净替换 |
 | REQ | `WriteBackFull` | RN→HN | 脏替换 |
-| SNP | `SnpShared` | HN→RN | 一致读需要共享 |
-| SNP | `SnpUnique` | HN→RN | 一致写需要独占 |
+| SNP | `SnpShared` | HN→RN | 共享 snoop |
+| SNP | `SnpUnique` | HN→RN | 独占 snoop |
 | RSP | `SnpResp` | RN→HN | snoop 无数据响应 |
 | RSP | `CompAck` | RN→HN | 一致读/写完成确认 |
 | RSP | `RetryAck` | HN→RN；SN→HN | 拒绝首次请求 |
@@ -45,28 +44,30 @@
 | RSP | `Comp` | HN→RN；SN→HN | Evict 完成；SN 写完成 |
 | RSP | `CompDBIDResp` | HN→RN | 授予 RN 写数据槽 |
 | RSP | `DBIDResp` | SN→HN | 授予 HN 写数据槽 |
-| DAT | `CompData` | SN→HN；HN→RN | 读数据或写回数据 |
+| DAT | `CompData` | SN→HN；HN→RN | 读数据 |
 | DAT | `SnpRespData` | RN→HN | snoop 携带脏数据 |
 | DAT | `CopyBackWrData` | RN→HN | 脏替换写回 |
-| DAT | `NonCopyBackWrData` | RN→HN；HN→SN | 非一致写数据 |
+| DAT | `NonCopyBackWrData` | HN→SN | HN 写内存数据 |
 
 ### 0.3 端点能力不等于系统能力
 
-HN 在一致模式下也能接受 `ReadNoSnp` 和 `WriteNoSnpFull`，但前提是目标行在目录中未被持有，而且不会为它分配目录项。产品中的一致 RN 从不发这两个 opcode；一致 RN 也无法消费 `CompData(I)`，因为它在 `datRx` 断言 `resp` 只能是 SC/UC/UD_PD。因此：
+HN 端点也接受 `ReadNoSnp` 和 `WriteNoSnpFull`，但前提是目标行在目录中未被持有，而且不会为它分配目录项。产品中的 RN 从不发这两个 opcode；一致 RN 也无法消费 `CompData(I)`，因为它在 `datRx` 断言 `resp` 只能是 SC/UC/UD_PD。因此：
 
-- 一致模式下的 HN 端点接受 6 个 REQ opcode。
-- 产品一致 RN 只发 4 个；产品非一致 RN 只发 2 个。
-- SN 永远只接受 2 个。
+- HN 端点接受 6 个 REQ opcode。
+- 产品 RN 只发 4 个。
+- SN 永远只接受 `ReadNoSnp` 和 `WriteNoSnpFull`。
 
 本文后面说的“系统能力”，指产品 RN 实际会发起、HN/SN 实际会执行的组合；端点测试能注入的额外组合会单独说明。
 
-## 1. 系统模型
+## 1. 系统模型与约定
+
+### 1.1 端点、拓扑和状态
 
 默认拓扑是 RN0/Stop0、HN/Stop1、RN1/Stop2、SN/Stop3。四条环方向都是 `0 → 1 → 2 → 3 → 0`。
 
 | 角色 | 默认 Stop | 保存的状态 | 职责 |
 |---|---|---|---|
-| RN0/RN1 | 0/2 | 一个本地命令上下文；可选 cache；victim 缓冲；一份 snoop 响应暂存 | 选 opcode、发 REQ、安装数据、发 CompAck、响应 snoop、返回本地结果 |
+| RN0/RN1 | 0/2 | 一个本地命令上下文；cache；victim 缓冲；一份 snoop 响应暂存 | 选 opcode、发 REQ、安装数据、发 CompAck、响应 snoop、返回本地结果 |
 | HN | 1 | 一个活动事务；每行两个 holder 的目录；retry 等待表；下游 ID/DBID；待转发数据 | 准入或拒绝、查目录、发 snoop、读写 SN、把数据转回 RN |
 | SN | 3 | 内存行；一个活动内存操作；一个 retry 等待记录 | 读/写整行，先授权写数据，写完再发 Comp |
 | RingStop | 每个 Stop | 每通道 FIFO（默认 3 项）；到下一 Stop 的 credit | 入队、按 dst 本地弹出或转发、仲裁本地注入 |
@@ -76,12 +77,18 @@ HN 在一致模式下也能接受 `ReadNoSnp` 和 `WriteNoSnpFull`，但前提�
 约束：
 
 - 每次访问完整 64 B；一条 DAT flit 携带全部 512 bit；地址必须 64 B 对齐。
-- 每个 RN 一次只接受一条本地命令；一致模式下 `io.request.ready` 还要求当前没有正在输入的 snoop。
+- 每个 RN 一次只接受一条本地命令；`io.request.ready` 还要求当前没有正在输入的 snoop。
 - HN 只有一笔活动事务，但可以有多个被拒绝的请求在 retry 表里等待。
 - SN 一次执行一个内存操作，另有一个被拒绝的请求等待重发。
 - HN 不缓存数据，只暂存当前事务需要的一整行。
 - cache 和目录大小必须是大于 1 的 2 的幂；目录必须覆盖 SN 内存，且不做目录替换。
 - SN 内存行数只要求大于 0；地址按 `addr >> 6` 索引，越界会断言。
+
+### 1.2 数据粒度和本地接口
+
+- 行大小 64 字节，所有地址必须 64 字节对齐（低 6 位为零）。
+- 一次 DAT 传输承载完整 512 bit 行，没有多 beat、没有字节掩码。
+- 所有写都是整行替换；没有部分写、没有 `WriteUnique` 系列。
 
 本地接口见 [RnPort.scala](../src/main/scala/chi/RnPort.scala)：
 
@@ -92,33 +99,94 @@ response = {txnID, data}
 
 读返回整行；写返回 0。`response` 被反压时结果保持稳定，RN 不接受新的本地命令，但 snoop 仍可处理。
 
-## 2. 传输层
+### 1.3 内部 flit 与标准 CHI 线格式的差异
 
-### 2.1 四条单向环
+内部 flit 是精简结构，不是完整的 CHI 线格式：
 
-REQ、RSP、SNP、DAT 各有一条独立物理环：
+| 通道 | 字段 | 默认位宽 |
+|---|---|---:|
+| REQ | `tgtID, srcID, txnID, opcode, addr, allowRetry, pCrdType` | 67 |
+| RSP | `tgtID, srcID, txnID, opcode, resp, dbID, pCrdType` | 23 |
+| SNP | `srcID, txnID, opcode, addr` | 59 |
+| DAT | `tgtID, srcID, txnID, opcode, resp, dbID, data` | 530 |
+
+没有 `MemAttr`、`Size`、`NS`、`Order`、`QoS`、`PBHA`、`Expect`/`ReturnNID`、`FwdNID`、`VMID` 等标准字段。REQ 和 SNP 的 `addr` 是包含 6 bit 行内偏移的完整字节地址，默认 48 bit。SNP 没有 `tgtID`，由发送方额外提供 `dst` 供环路由。
+
+`opcode` 宽度：REQ 6 bit、RSP 4 bit、SNP 5 bit、DAT 3 bit。`pCrdType` 4 bit，本实现只用 type 0。cache 状态 `I/SC/UC/UD` 用 2 bit 内部编码；线协议 `resp` 用 3 bit，包含 `I_PD/SC_PD/UD_PD`，两套编码不可混用。
+
+### 1.4 ID 语义
+
+图中的 `A` 是 64 B 对齐地址，`D` 是整行数据。ID 约定：
+
+| ID | 本实现取值 | 用途 |
+|---|---|---|
+| `t` | RN 本地命令的 `txnID` | RN→HN 的 REQ；HN→RN 的 `CompData`、`CompDBIDResp`、`Comp` 恢复为 `t` |
+| `h` | HN 下游事务 ID，当前固定 0 | HN→SN 的 REQ；SN→HN 的 `CompData`、`DBIDResp`、`Comp` |
+| `s` | HN snoop ID，当前固定 0 | SNP 和 `SnpResp`/`SnpRespData` |
+| `dH` | HN 数据槽 ID，当前固定 0 | `CompDBIDResp.dbID`；RN 写 DAT 的 `txnID`；`CompData.dbID`；`CompAck` 使用收到的 `CompData.dbID` |
+| `dS` | SN 数据槽 ID，当前固定 0 | `DBIDResp.dbID`；HN 写 DAT 的 `txnID`；SN 写完成 `Comp.dbID` |
+
+容易混淆的点：
+
+- HN 保存上游的 `(srcID, txnID)` 作为事务身份并用于重试校验；向 SN 发请求时把 `srcID` 改成 HN、`tgtID` 改成 SN、`txnID` 改成 `h`。返回 RN 时恢复 `t`。HN 是重新构造消息，不是把同一条 flit 原样转发。
+- 写 DAT 用 `CompDBIDResp.dbID` 作为 `txnID`；`CompAck` 用收到的 `CompData.dbID`。当前两者都为 0，但匹配规则不同，不能拿原请求的 `t` 去匹配。
+- `RetryAck` 的 `txnID` 是被拒绝请求的 ID；`PCrdGrant` 的 `txnID` 固定为 0，按“提供方 + `pCrdType`”匹配，不能按请求 ID 匹配。
+- `SnpResp`/`SnpRespData` 的 `txnID` 是 snoop ID `s`，不是原读请求的 `t`。
+- 消息身份或字段错误会触发断言；正常输入下状态才会按上述路径推进。
+
+### 1.5 cache 和目录
+
+每个 RN 有一个直接映射 cache，默认 8 行。索引是 `addr[6 + indexWidth - 1 : 6]`，tag 是更高位；一个 DAT flit 就是一行。cache 状态是内部 2 bit 编码 I/SC/UC/UD，和线上 3 bit 的 `resp` 是两套编码。
+
+| cache 状态 | 含义 | 本地读 | 本地写 | 替换 |
+|---|---|---|---|---|
+| I | 无有效副本 | 缺失，发 `ReadShared` | 缺失，发 `ReadUnique` | 无 |
+| SC | 共享、干净 | 命中，本地返回 | 发 `ReadUnique` 获取独占权 | `Evict → I` |
+| UC | 独占、干净 | 命中，本地返回 | 本地修改，变 UD | `Evict → I` |
+| UD | 独占、脏 | 命中，本地返回 | 本地修改，保持 UD | `WriteBackFull → I` |
+
+HN 目录默认 64 行，每行两个 holder 槽，每个槽记录 `valid/id/state`，state 只有 `I/SC/UC`：
+
+- 最多一个 RN 持有 UC；如果某行是 UC，另一个 RN 必须是 I。
+- 两个 RN 都是 SC 时，SN 必须是最新数据（在事务完成边界）。
+- 目录不记录 UD：RN 从 UC 静默变 UD 时，HN 仍按 UC 记录。因此 HN 的“UC”表示“独占权限”，不表示干净。
+- 目录覆盖 SN 的全部内存；没有目录替换，一致请求的地址超出目录范围会断言。
+- 目录是保守记录：`Evict` 或 `WriteBackFull` 已发出但尚未处理时，HN 可能仍保留旧 holder；如果此时发生 snoop，可能得到 `I`（干净 victim）或 `I_PD`（脏 victim）。在事务静止且请求处理完的边界检查目录与 RN 持有关系，不能逐周期要求精确。
+- 产品 RN 不直接发 `ReadNoSnp`/`WriteNoSnpFull`；它们只作为 HN 访问 SN 的下游请求（见 6.4、7）。
+
+### 1.6 复位
+
+复位是全系统复位：清空所有端点的活动上下文、retry 标记、等待表、预留、待发响应、cache、目录、Ring FIFO，并恢复所有 link credit；SN 内存恢复 `initialLines`。复位不保留脏数据，也不支持某个端点单独复位后继续使用旧网络消息。
+
+## 2. Ring 传输层
+
+### 2.1 拓扑与跳数
+
+REQ、RSP、SNP、DAT 各有一条独立物理环，四个 Stop 的物理顺序相同：
 
 ```text
-           RN0 / Stop0 ──────────► HN / Stop1
-                ▲                     │
-                │                     ▼
-            SN / Stop3 ◄───────── RN1 / Stop2
+                环方向（顺时针）
+        RN0  ────────────────────────►  HN
+         ▲                               │
+         │                               │
+         │                               ▼
+        SN   ◄────────────────────────  RN1
+
+        物理位置索引：0=RN0, 1=HN, 2=RN1, 3=SN
 ```
 
-端点之间没有 RN↔SN、SN↔RN 或 RN↔RN 的直接消息；所有消息都以 HN 为源或目的：
+端点之间没有 RN↔SN、SN↔RN 或 RN↔RN 的直接消息；所有消息都以 HN 为源或目的。单向绕行导致往返跳数不对称：
 
-| 路径 | hop 数 | 经过的 Stop | 典型消息 |
-|---|---:|---|---|
-| RN0 → HN | 1 | 0→1 | REQ、RSP、DAT |
-| HN → RN0 | 3 | 1→2→3→0 | RSP、DAT、SNP |
-| HN → RN1 | 1 | 1→2 | RSP、DAT、SNP |
-| RN1 → HN | 3 | 2→3→0→1 | REQ、RSP、DAT |
-| HN → SN | 2 | 1→2→3 | REQ、DAT |
-| SN → HN | 2 | 3→0→1 | RSP、DAT |
+| 从 \ 到 | RN0 | HN | RN1 | SN |
+|---|---:|---:|---:|---:|
+| **RN0** | – | 1 | 2 | 3 |
+| **HN** | 3 | – | 1 | 2 |
+| **RN1** | 2 | 3 | – | 1 |
+| **SN** | 1 | 2 | 3 | – |
 
-HN→RN0 的消息会经过 RN1 和 SN 的 Stop，但只有 `dst` 等于本 Stop 时才弹出；经过不等于收到。请求和响应可能走完全不同的 hop 数。
+例如 RN0 到 SN 要 3 跳，SN 回 RN0 只要 1 跳。HN→RN0 的消息会经过 RN1 和 SN 的 Stop，但只有 `dst` 等于本 Stop 时才弹出；经过不等于收到。
 
-### 2.2 一个 Stop 内部
+### 2.2 Stop 内部与仲裁
 
 每个 Stop 每通道一个 FIFO，只有环输入进入 FIFO；本地注入不经过本 Stop 的 FIFO：
 
@@ -136,9 +204,9 @@ local.inject ─────────────────────→ 
 - 注入要求 2 个空槽，是为了在环上保留一个 bubble，防止一组已接受的 flit 把整圈填满后无法前进。
 - 任意 FIFO 出队（本地弹出或转发）都会向上游返回一个 credit；返回的 credit 下一周期才可用。
 - 本地弹出和本地注入可以同一周期发生；本地队头被阻塞时，它后面的 flit 不能越过它。
-- 端点消息在反压下保持稳定；只有 `valid && ready` 才算一次传输。
+- `RingStop` 的输出是普通 `Decoupled`，不是 `Irrevocable`：在 `valid` 已拉高但未被接受期间，新到的转发可以替换尚未传输的注入。只有 `valid && ready` 才真正传输。
 
-实现见 [RingStop.scala](../src/main/scala/noc/RingStop.scala)、[Ring.scala](../src/main/scala/noc/Ring.scala)、[QuadRing.scala](../src/main/scala/noc/QuadRing.scala)。
+最后一点容易和端点内部的行为混淆：RN 的 RSP/DAT 输出仲裁在停滞时会锁定已呈现的选择（见 3.4），那是端点自己的约束，不是 `RingStop` 的。
 
 ### 2.3 credit 与 bubble
 
@@ -157,27 +225,11 @@ inject allowed:  downstreamCredits >= 2
 - **Ring credit**：下一 Stop 的 FIFO 空位，按 flit/hop 计数。
 - **P-Credit**：HN/SN 的一个事务资源，按请求计数；拿到它只表示完成方预留了上下文，不表示环上一定有位置。
 
-### 2.4 路由、ID 和物理位置
+### 2.4 路由与物理位置
 
-`ChiNoC` 把 CHI 目的 node ID 映射成外层 `RingFlit.dst`：REQ/RSP/DAT 使用 `tgtID`；SNP 没有 `tgtID`，使用独立的 `RoutedSnp.dst`。默认 node ID 等于 Stop 索引，但代码支持稀疏或重排的 ID；`dst` 是物理 Stop 索引，不一定等于 `tgtID`。见 [ChiNoC.scala](../src/main/scala/chi/ChiNoC.scala) 和 [ChiFlit.scala](../src/main/scala/chi/ChiFlit.scala)。
+`ChiNoC` 把 CHI 目的 node ID 映射成外层 `RingFlit.dst`：REQ/RSP/DAT 使用 `tgtID`；SNP 没有 `tgtID`，使用独立的 `RoutedSnp.dst`。默认 node ID 等于 Stop 索引，但代码支持稀疏或重排的 ID；`dst` 是物理 Stop 索引，不一定等于 `tgtID`。未知目标在 `valid` 时直接断言，重复端点 ID 在 elaboration 阶段失败。见 [ChiNoC.scala](../src/main/scala/chi/ChiNoC.scala) 和 [ChiFlit.scala](../src/main/scala/chi/ChiFlit.scala)。
 
-图中的 `A` 是 64 B 对齐地址，`D` 是整行数据。ID 约定：
-
-| ID | 本实现取值 | 用途 |
-|---|---|---|
-| `t` | RN 本地命令的 `txnID` | RN→HN 的 REQ；HN→RN 的 `CompData`、`CompDBIDResp`、`Comp` 恢复为 `t` |
-| `h` | HN 下游事务 ID，当前固定 0 | HN→SN 的 REQ；SN→HN 的 `CompData`、`DBIDResp`、`Comp` |
-| `s` | HN snoop ID，当前固定 0 | SNP 和 `SnpResp`/`SnpRespData` |
-| `dH` | HN 数据槽 ID，当前固定 0 | `CompDBIDResp.dbID`；RN 写 DAT 的 `txnID`；`CompData.dbID`（当前也填 0）；`CompAck` 使用收到的 `CompData.dbID` |
-| `dS` | SN 数据槽 ID，当前固定 0 | `DBIDResp.dbID`；HN 写 DAT 的 `txnID`；SN 写完成 `Comp.dbID` |
-
-容易混淆的点：
-
-- HN 保存上游的 `(srcID, txnID)`；向 SN 发请求时把 `srcID` 改成 HN、`tgtID` 改成 SN、`txnID` 改成 `h`。返回 RN 时恢复 `t`。HN 是重新构造消息，不是把同一条 flit 原样转发。
-- 写 DAT 用 `CompDBIDResp.dbID` 作为 `txnID`；`CompAck` 用收到的 `CompData.dbID`。当前两者都为 0，但匹配规则不同，不能拿原请求的 `t` 去匹配。
-- `RetryAck` 的 `txnID` 是被拒绝请求的 ID；`PCrdGrant` 的 `txnID` 固定为 0，按“提供方 + `pCrdType`”匹配，不能按请求 ID 匹配。
-- `SnpResp`/`SnpRespData` 的 `txnID` 是 snoop ID `s`，不是原读请求的 `t`。
-- 消息身份或字段错误会触发断言；正常输入下状态才会按上述路径推进。
+传输层不解析 opcode，只按 `dst` 转发或 eject。
 
 ### 2.5 跨通道没有全局顺序
 
@@ -188,69 +240,24 @@ inject allowed:  downstreamCredits >= 2
 - HN 只在收到 SN 写完成 `Comp` 之后才认为下游写结束。
 - RN 先安装数据，再发 `CompAck`；HN 收到 `CompAck` 才释放一致读上下文。
 
-同一通道、同一源发出的消息在环上保持 FIFO 顺序，不会被后来的消息超越；不同源的消息可以交错。HN 的串行化和 retry 负责把不同源的交错整理成可执行的顺序。
+同一通道、同一源发出的消息在环上保持 FIFO 顺序，不会被后来的消息超越；不同源的消息可以交错。HN 的串行化和 retry 负责把不同源的交错整理成可执行的顺序。一个直接后果是重试的 `RetryAck` 与 `PCrdGrant` 可以任意顺序到达，请求方必须分别记账。
 
-## 3. 非一致模式：2 种事务
+## 3. RN 本地行为
 
-默认 `coherent=false`。RN 不维护 cache，不做 snoop，直接把本地命令翻译成两种请求。
+### 3.1 cache 状态与决策
 
-### 3.1 整行读：ReadNoSnp
+RN 在发出线上请求前先看本地 cache：
 
-前提：RN0 读取 A，SN 内存已有 `M[A]`。
+| 本地命令 | cache 状态 | RN 做什么 | 线上事务 |
+|---|---|---|---|
+| 读 | 命中 SC/UC/UD | 直接返回 cache 数据 | 无 |
+| 写 | 命中 UC/UD | 本地写，转 UD | 无 |
+| 写 | 命中 SC | 需要独占权 | `ReadUnique` |
+| 读 | miss | 需要数据 | `ReadShared` |
+| 写 | miss | 需要数据和独占权 | `ReadUnique` |
+| 任意 | miss，同索引有 victim | 先腾位置 | `Evict` 或 `WriteBackFull`，再发原命令 |
 
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `ReadNoSnp` | RN0→HN | REQ | `txnID=t`, `addr=A`, `allowRetry=1` | RN `sendReq→waitData`；HN `idle→sendSnReq` |
-| 2 | REQ `ReadNoSnp` | HN→SN | REQ | `srcID=HN`, `txnID=h=0`, `addr=A` | HN 记录下游身份；SN `idle→readLine` |
-| 3 | DAT `CompData` | SN→HN | DAT | `txnID=h`, `resp=I`, `dbID=0`, `data=M[A]` | SN 读内存一次；HN `waitSnData→sendRnData` |
-| 4 | DAT `CompData` | HN→RN0 | DAT | `txnID=t`, `resp=I`, `dbID=0`, `data=M[A]` | HN 注入后 `idle`；RN 收数后 `returnResult` |
-| 5 | 本地 response | RN0→CPU | — | `txnID=t`, `data=M[A]` | RN `returnResult→idle` |
-
-关键点：
-
-- HN 接收并保存 SN 的整行数据，再用原请求 ID 构造新的 `CompData`。
-- HN 在把 `CompData` 注入 DAT 环后就释放上下文，不等待 RN 真正收到。
-- 没有 `CompAck`，没有 cache 安装，也不改目录。
-- 在一致配置下，HN 端点仍可服务 `ReadNoSnp`，但要求该地址在目录中未被持有；产品一致 RN 不会发它。
-
-
-### 3.2 整行写：WriteNoSnpFull
-
-前提：RN0 将 A 的整行替换为 D。
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `WriteNoSnpFull` | RN0→HN | REQ | `txnID=t`, `addr=A` | RN `sendReq→waitDbId`；HN `idle→sendRnRsp` |
-| 2 | RSP `CompDBIDResp` | HN→RN0 | RSP | `txnID=t`, `dbID=dH=0`, `resp=I` | HN 授权数据；RN `waitDbId→sendWriteData` |
-| 3 | DAT `NonCopyBackWrData` | RN0→HN | DAT | `txnID=dH`, `resp=I`, `data=D` | RN 注入后 `returnResult`；HN `waitRnData→sendSnReq` |
-| 4 | REQ `WriteNoSnpFull` | HN→SN | REQ | `txnID=h=0`, `addr=A` | SN `idle→sendDbId` |
-| 5 | RSP `DBIDResp` | SN→HN | RSP | `txnID=h`, `dbID=dS=0` | SN 授权数据；HN `waitSnDbId→sendSnData` |
-| 6 | DAT `NonCopyBackWrData` | HN→SN | DAT | `txnID=dS`, `resp=I`, `data=D` | SN `waitWriteData→writeLine`（内存更新） |
-| 7 | RSP `Comp` | SN→HN | RSP | `txnID=h`, `dbID=dS` | SN `sendComp→idle`；HN `waitSnComp→idle` |
-
-关键点：
-
-- 有两次授权：HN 的 `CompDBIDResp` 允许 RN 把数据交给 HN；SN 的 `DBIDResp` 允许 HN 把数据交给 SN。两次都**不**表示内存已更新，只有第 7 条 `Comp` 表示。
-- RN 在第 3 条 DAT 注入后就可以取本地结果；此时 HN 可能还没收到数据，SN 更没写。HN 一直保留上下文到第 7 条。
-- HN 不会在收到 RN 数据之前向 SN 发写请求，所以下游写数据不会缺失。
-- 本事务 RN→HN 和 HN→SN 的写数据 opcode 都是 `NonCopyBackWrData`。只有脏替换 `WriteBackFull` 的 RN→HN 数据使用 `CopyBackWrData`；HN 再向 SN 写时仍使用 `NonCopyBackWrData`。
-- 没有 `CompAck`。写完成不靠 CompAck，而靠 SN 的 `Comp`。
-
-
-## 4. 一致模式：本地能力
-
-开启 `coherent=true` 后，每个 RN 有一个直接映射 cache，默认 8 行。索引是 `addr[6 + indexWidth - 1 : 6]`，tag 是更高位；一个 DAT flit 就是一行。cache 状态是内部 2 bit 编码 I/SC/UC/UD，和线上 3 bit 的 `resp` 是两套编码。
-
-### 4.1 cache 状态
-
-| cache 状态 | 含义 | 本地读 | 本地写 | 替换 |
-|---|---|---|---|---|
-| I | 无有效副本 | 缺失，发 `ReadShared` | 缺失，发 `ReadUnique` | 无 |
-| SC | 共享、干净 | 命中，本地返回 | 发 `ReadUnique` 获取独占权 | `Evict → I` |
-| UC | 独占、干净 | 命中，本地返回 | 本地修改，变 UD | `Evict → I` |
-| UD | 独占、脏 | 命中，本地返回 | 本地修改，保持 UD | `WriteBackFull → I` |
-
-选择逻辑见 [RnNode.scala](../src/main/scala/chi/RnNode.scala#L85)：
+实现细节见 [RnNode.scala](../src/main/scala/chi/RnNode.scala#L85)：
 
 - 读命中：直接把 `cacheData` 放进结果，`idle → returnResult → idle`，没有 Ring flit。
 - 写命中 UC/UD：本地写 `cacheData`，状态置 UD，结果 `data=0`。UC→UD 是静默的，HN 目录仍把该行记作 UC。
@@ -261,7 +268,9 @@ inject allowed:  downstreamCredits >= 2
 
 `ReadUnique` 的 `CompData` 一定落在写路径：RN 用本地写数据 `W` 安装成 UD，不使用 HN 返回的旧数据。`ReadShared` 则使用返回的数据；它在没有其他 holder 时可能返回 `UC`，此时 RN 安装读回的数据，状态为 UC。
 
-### 4.2 替换：victim 和原命令是两笔请求
+命中路径不产生任何 flit，也不需要 snoop 或 `CompAck`。下面的场景都是 miss、升级或替换。
+
+### 3.2 替换：victim 和原命令是两笔请求
 
 ```text
 同一索引访问不同 tag
@@ -282,12 +291,10 @@ inject allowed:  downstreamCredits >= 2
 - 如果 victim 在等待授权/信用期间被 snoop 取走，RN 回 `SnpRespData(I_PD, D)` 并清 `victimDirty`；原来的 WriteBackFull 仍然要完成授权和数据阶段，最后发 `CopyBackWrData(I, data=0)`，HN 丢弃，不写 SN。取消的写回仍有一条 DAT flit，不能算作“整笔无数据事务”。
 - `resumeRequest()` 会清空 retry 标记并回到 `sendReq`；原命令可能被 HN 再次 RetryAck，这是正常的。
 
-### 4.3 RN 状态机
+### 3.3 RN 状态机
 
 ```text
 idle → sendReq → waitData → sendCompAck → returnResult → idle
-                        └──────────────→ returnResult → idle   (非一致读)
-       sendReq → waitDbId → sendWriteData → returnResult → idle (非一致写)
        sendReq → waitDbId → sendWriteData → sendReq           (写回后继续原命令)
        sendReq → waitComp → sendReq                           (Evict 后继续原命令)
 ```
@@ -295,32 +302,223 @@ idle → sendReq → waitData → sendCompAck → returnResult → idle
 | 状态 | 进入条件 | 离开事件 | 下一状态 |
 |---|---|---|---|
 | `idle` | 复位或上一结果被取走 | 本地命令握手 | 命中/写 UC/UD → `returnResult`；否则 `sendReq` |
-| `sendReq` | 有新命令或重发 | `reqTx.fire` | `ReadNoSnp`/`ReadShared`/`ReadUnique` → `waitData`；非一致写/`WriteBackFull` → `waitDbId`；`Evict` → `waitComp` |
-| `waitData` | 等 `CompData` | 匹配的 `datRx.fire` | 一致：安装数据 → `sendCompAck`；非一致：`returnResult` |
+| `sendReq` | 有新命令或重发 | `reqTx.fire` | `ReadShared`/`ReadUnique` → `waitData`；`WriteBackFull` → `waitDbId`；`Evict` → `waitComp` |
+| `waitData` | 等 `CompData` | 匹配的 `datRx.fire` | 安装数据 → `sendCompAck` |
 | `waitDbId` | 等 `CompDBIDResp` | 匹配的 `rspRx.fire` | `sendWriteData` |
 | `waitComp` | 等 Evict 的 `Comp` | 匹配的 `rspRx.fire` | `resumeRequest()` → `sendReq` |
-| `sendWriteData` | 有写数据槽 | `datTx.fire` | 一致：清 victimDirty → `sendReq`；非一致：`returnResult` |
+| `sendWriteData` | 有写数据槽 | `datTx.fire` | 清 `victimDirty` → `sendReq` |
 | `sendCompAck` | 数据已安装 | `rspTx.fire` | `returnResult` |
 | `returnResult` | 有本地结果 | `response.fire` | `idle` |
 
 `waitingForReply = waitData || waitDbId || waitComp` 是接收 RSP 的条件；`retryAckSeen && creditHeld` 时 `rspRx.ready` 关闭，RN 回到 `sendReq` 重发。接收 `datRx` 还会被 `rspRx.valid`、重试标记和 snoop 优先级挡住，避免在重试待决时把旧数据当成完成。
 
-### 4.4 snoop 与本地事务并行
+### 3.4 snoop 与本地事务并行
 
-一致模式下，RN 还有一条 snoop 响应路径。它不占用本地命令上下文，也不要求本地命令已经完成：
+RN 还有一条 snoop 响应路径。它不占用本地命令上下文，也不要求本地命令已经完成：
 
 - `snpRx.ready = !snoopPending`：一次接收一个 snoop，查 cache 或 victim，保存响应，直到 RSP/DAT 注入完成才接受下一个 snoop。
 - `snoopPending` 期间本地主状态可以继续等待数据、等待 DBID 或等待重试；snoop 响应和本地事务并行。
 - snoop 响应优先于主 RSP/DAT：两者同时新有效时选 snoop；如果主消息已经被反压锁住，则保持主消息不变，等它发完再发 snoop；反过来，snoop 被反压时也保持 snoop，不会被主消息替换。
 - 本地结果被 CPU 反压时，RN 仍能响应 snoop；这是系统能完成 snoop 竞争的关键。
 
-## 5. 一致模式：远端事务
+## 4. 从 RN0/RN1 的真实请求看一致性
 
-产品一致 RN 真正发出的 REQ 只有四个。每个 opcode 的结果由目录和对方 cache 状态决定，下面把所有可达路径列全。
+下面每个场景都从 CPU 在某个 RN 上的本地命令开始。`ReadShared`、`ReadUnique`、`Evict`、`WriteBackFull` 不是讨论对象，而是 RN 为完成这条命令发出的消息；HN 再用 `ReadNoSnp`/`WriteNoSnpFull` 访问 SN。
 
-### 5.1 ReadShared
+这些场景共同维护两条不变量：
 
-产品 RN 只在请求行 miss 时发 `ReadShared`，所以请求方对该行是 I。目录最多记录另一个 holder（系统只有两个 RN）。
+1. 任一行最多只有一个 RN 持有独占/写权限（UC 或 UD），其余持有者只能是 SC 或 I。
+2. 只要还存在 SC 持有者，内存就必须是最新的；唯一的 UD 持有者可以把脏数据留在 cache。
+
+HN 的目录、snoop 和 `CompAck` 完成边界，都是为在请求路径上维持这两条不变量。
+
+### 4.1 场景 1：RN0 读 miss，没有其他副本
+
+CPU 在 RN0 上读 A；RN0 未缓存 A，HN 目录也没有 A。
+
+```text
+RN0                     HN                      SN
+ |-- REQ ReadShared ---->|                       |
+ |                       |-- REQ ReadNoSnp ----->|
+ |                       |<---- DAT CompData(I) -|
+ |<---- DAT CompData(UC)-|                       |
+ |-- RSP CompAck -------->|                       |
+```
+
+1. RN0 发 `ReadShared`（`tgtID = HN`，`srcID = RN0`）。
+2. HN 查目录，A 没有 holder，也没有其他 RN 需要 snoop。它把 RN0 记为 UC holder，然后向 SN 发 `ReadNoSnp`。
+3. SN 返回 `CompData(I)`。
+4. HN 把数据以 `CompData(UC)` 发给 RN0。没有其他副本，所以直接给独占权限。
+5. RN0 安装 UC，向 CPU 返回数据，并发送 `CompAck`。
+6. HN 收到 `CompAck` 后才释放上下文。
+
+完成点：CPU 的读结果在 `CompAck` 注入后才返回；HN 在收到 `CompAck` 前一直保留这笔事务和目录状态。
+
+### 4.2 场景 2：RN1 读 miss，RN0 持有干净副本
+
+CPU 在 RN1 上读 A；RN0 已经以 SC 或 UC 持有 A。
+
+```text
+RN1                    HN                     RN0                SN
+ |-- REQ ReadShared --->|                      |                  |
+ |                      |-- SNP SnpShared ---->|                  |
+ |                      |<-- RSP SnpResp(SC) --|                  |
+ |                      |-- REQ ReadNoSnp ----------------------->|
+ |                      |<-- DAT CompData(I) ---------------------|
+ |<---- DAT CompData(SC)-|                     |                  |
+ |-- RSP CompAck ------->|                      |                  |
+```
+
+1. RN1 发 `ReadShared`。
+2. HN 目录显示 RN0 是 holder 且不是请求者，于是发 `SnpShared`。
+3. RN0 是干净的，回 `SnpResp(SC)`，自己保持 SC（如果原来是 UC，会降为 SC）。
+4. snoop 响应不带数据，HN 需要自己去 SN 取数据：发 `ReadNoSnp`，SN 回 `CompData(I)`。
+5. HN 把数据以 `CompData(SC)` 发给 RN1；RN1 安装 SC。
+6. RN1 回 `CompAck`；HN 在目录中把 RN1 记为 SC holder。
+
+完成点同上。
+
+### 4.3 场景 3：RN1 读 miss，RN0 持有脏副本
+
+CPU 在 RN1 上读 A；RN0 以 UD 持有 A，数据比内存新。
+
+```text
+RN1                    HN                     RN0                SN
+ |-- REQ ReadShared --->|                      |                  |
+ |                      |-- SNP SnpShared ---->|                  |
+ |                      |<-- DAT SnpRespData --|                  |
+ |                      |     (SC_PD, 脏数据)   |                  |
+ |                      |-- REQ WriteNoSnpFull ---------------->|
+ |                      |<-- RSP DBIDResp ----------------------|
+ |                      |-- DAT NonCopyBackWrData -------------->|
+ |                      |<-- RSP Comp --------------------------|
+ |<---- DAT CompData(SC)-|                     |                  |
+ |-- RSP CompAck ------->|                      |                  |
+```
+
+1. RN1 发 `ReadShared`；HN 向 RN0 发 `SnpShared`。
+2. RN0 是 UD，回 `SnpRespData(SC_PD)` 并携带数据，自己降为 SC。
+3. 因为 RN0 还保留共享副本，内存必须变干净。HN 先把这份脏数据写回 SN（`WriteNoSnpFull` → `DBIDResp` → `NonCopyBackWrData` → `Comp`）。
+4. 写回完成后，HN 才把同一份数据以 `CompData(SC)` 发给 RN1。
+5. RN1 安装 SC 并回 `CompAck`。
+
+关键点：`SnpShared` 之后 holder 仍存在，所以先清内存；如果 holder 失效，则不需要写回，权限可以直接给 UC。
+
+### 4.4 场景 4：RN1 写 miss，RN0 持有脏副本
+
+CPU 在 RN1 上写 A；RN1 未缓存 A，RN0 以 UD 持有 A。
+
+```text
+RN1                    HN                     RN0
+ |-- REQ ReadUnique --->|                      |
+ |                      |-- SNP SnpUnique ---->|
+ |                      |<-- DAT SnpRespData ---|   （I_PD）
+ |<---- DAT CompData(UD_PD) --------------------|   （脏数据直接转交）
+ |  安装本地写数据为 UD   |                      |
+ |-- RSP CompAck ------->|                      |
+```
+
+1. 写 miss 需要独占权，RN1 发 `ReadUnique`。
+2. HN 向 RN0 发 `SnpUnique`，要求失效。
+3. RN0 回 `SnpRespData(I_PD)`，交出脏数据并变为 I。
+4. HN **不写 SN**，把数据作为 `CompData(UD_PD)` 直接转交给 RN1。
+5. RN1 不使用返回的数据，而是安装自己的写数据并置 UD，然后回 `CompAck`。
+
+关键点：这是所有权转移，不是写内存。内存仍然是旧值，新的脏副本在 RN1。若 RN0 响应是干净的 `SnpResp(I)`，HN 仍从 SN 取数据，返回 `UC`。
+
+### 4.5 场景 5：RN0 写命中 SC（升级）
+
+CPU 在 RN0 上写 A；RN0 已经以 SC 持有 A。
+
+```text
+RN0                     HN                      SN
+ |-- REQ ReadUnique ---->|                       |
+ |                       |-- REQ ReadNoSnp ----->|
+ |                       |<---- DAT CompData(I) -|
+ |<---- DAT CompData(UC)-|                       |
+ |  安装本地写数据为 UD   |                       |
+ |-- RSP CompAck -------->|                       |
+```
+
+1. SC 不能直接写，RN0 发 `ReadUnique`。
+2. HN 目录里只有请求者自己，不需要 snoop；但它仍会向 SN 重读一次（保守实现）。
+3. HN 返回 `CompData(UC)`。RN0 丢弃数据，安装自己的写数据并置 UD。
+4. RN0 回 `CompAck`。
+
+关键点：这条路径没有 snoop，也没有写内存；它只是把 SC 升级成 UD。HN 重读 SN 在语义上不是必需的，但实现选择了统一路径。
+
+### 4.6 场景 6：命中的本地请求
+
+- 读命中 SC/UC/UD：RN 直接返回 cache 行。
+- 写命中 UC/UD：RN 直接修改 cache，状态转 UD。
+
+以上都不产生任何 flit，也不需要 snoop 或 `CompAck`。这是一致性协议的快路径；只有 miss、SC 写升级和替换才会进入线上事务。
+
+### 4.7 场景 7：miss 且同索引有 victim
+
+直接映射 cache 的索引被别的行占用时，RN 必须先处理 victim，再发原命令。victim 和原命令是两笔独立请求。
+
+干净 victim（SC/UC）：
+
+```text
+RN0                    HN
+ |-- REQ Evict --------->|
+ |<-- RSP Comp ----------|
+ |-- REQ <原命令> ------->|
+```
+
+- RN 在接受本地命令时就把 victim 移出 cache。
+- `Evict` 让 HN 删除该 holder 记录并回 `Comp`；不访问 SN。
+- RN 收到 `Comp` 后发原命令（`ReadShared` 或 `ReadUnique`）。
+- HN 的可达情况：发送方是 holder 且无其他 holder → 清除；发送方是 holder 且另一 RN 也持 SC → 只清发送方；发送方不是 holder 或重复 `Evict` → 不清任何项，仍回 `Comp`。
+- HN 不检查这一行是否真的干净；产品 RN 只会对 SC/UC 干净行发 `Evict`，脏行必须走 `WriteBackFull`。
+
+脏 victim（UD）：
+
+```text
+RN0                    HN                      SN
+ |-- REQ WriteBackFull ->|                       |
+ |<-- RSP CompDBIDResp --|                       |
+ |-- DAT CopyBackWrData ->|                      |
+ |-- REQ <原命令> ------->|                       |
+ |                       |-- REQ WriteNoSnpFull->|
+ |                       |<---- RSP DBIDResp ----|
+ |                       |-- DAT NonCopyBackWrData ->|
+ |                       |<---- RSP Comp ---------|
+```
+
+- RN 发 `WriteBackFull`，等 `CompDBIDResp` 后把脏数据作为 `CopyBackWrData(UD_PD)` 发出。
+- DAT 注入后 RN 立即发原命令，不等 SN 写完；原命令如果先到，会被 HN `RetryAck`。
+- HN 等 SN 的 `Comp` 才算写回完成。
+
+取消路径：如果 `WriteBackFull` 还没收到 `CompDBIDResp`，而 snoop 命中 victim，RN 用 `SnpRespData(I_PD)` 把数据交给 snoop 并清除 `victimDirty`；原来的写回继续，但 `CopyBackWrData` 带 `resp = I` 和全零数据，HN 丢弃、不写 SN。
+
+### 4.8 场景 8：两个 RN 争用 HN
+
+RN0 正在写回另一行的脏 victim，RN1 发来写 miss 的 `ReadUnique`。HN 只有一个活动上下文，于是：
+
+```text
+RN1                         HN
+ |-- REQ ReadUnique(allowRetry=1) -->|
+ |<-- RSP RetryAck ------------------|
+ |                                   |  （HN 完成 RN0 的写回）
+ |<-- RSP PCrdGrant -----------------|
+ |-- REQ ReadUnique(allowRetry=0) -->|
+ |<-- 正常事务 ---------------------->|
+```
+
+- 第一次请求被存入等待表，HN 回 `RetryAck`。
+- HN 空闲后把等待项搬进上下文并回 `PCrdGrant`。
+- RN1 收齐 `RetryAck` 和 `PCrdGrant`（顺序任意）后，用相同身份重发，`allowRetry = 0`。
+- HN 对 credited retry 不能再拒绝。
+
+这就是两个 RN 共享一个 HN 时的排队方式：不是让请求停在环上，而是协议层拒绝后重新授权。
+
+### 4.9 路径总表与 snoop 数据来源
+
+产品 RN 只发四个 REQ，但每个 opcode 的结果由目录和对方 cache 状态决定。下面把所有可达路径列全。
+
+#### ReadShared
 
 | 对方/目录状态 | HN 动作 | SN | 返回给请求方 | 请求方新状态 |
 |---|---|---|---|---|
@@ -338,52 +536,7 @@ idle → sendReq → waitData → sendCompAck → returnResult → idle
 - 脏 victim 回 `I_PD`：对方没有驻留副本，数据责任转给 HN；请求方拿到 UC，因为没有别的副本。
 - 干净 victim 或 Evict 已发出但尚未处理时，目录可能仍保留旧 holder；snoop 得到 `I`，按“没有其他 holder”处理，请求方拿 UC。
 
-流程（无 holder）：
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `ReadShared` | RN0→HN | REQ | `txnID=t`, `addr=A` | HN 记录 RN0 为 UC holder，`sendSnReq` |
-| 2 | REQ `ReadNoSnp` | HN→SN | REQ | `txnID=h`, `addr=A` | SN `readLine→sendData` |
-| 3 | DAT `CompData` | SN→HN | DAT | `txnID=h`, `resp=I`, `data=M[A]` | HN `waitSnData→sendRnData` |
-| 4 | DAT `CompData` | HN→RN0 | DAT | `txnID=t`, `resp=UC`, `data=M[A]` | RN 安装 A 为 UC；HN `sendRnData→waitRnCompAck` |
-| 5 | RSP `CompAck` | RN0→HN | RSP | `txnID=dH` | RN `sendCompAck→returnResult`；HN 收到后 `idle` |
-
-
-流程（干净 holder）：
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `ReadShared` | RN0→HN | REQ | `txnID=t`, `addr=A` | HN 发现 RN1 是其他 holder，`sendSnp` |
-| 2 | SNP `SnpShared` | HN→RN1 | SNP | `txnID=s`, `addr=A` | RN1 命中 SC |
-| 3 | RSP `SnpResp` | RN1→HN | RSP | `txnID=s`, `resp=SC` | RN1 保持 SC；HN `finishSnoop`：RN1 SC、RN0 SC；`sendSnReq` |
-| 4 | REQ `ReadNoSnp` | HN→SN | REQ | `txnID=h`, `addr=A` | SN 读内存 |
-| 5 | DAT `CompData` | SN→HN | DAT | `txnID=h`, `resp=I`, `data=M[A]` | HN `waitSnData→sendRnData` |
-| 6 | DAT `CompData` | HN→RN0 | DAT | `txnID=t`, `resp=SC`, `data=M[A]` | RN0 安装 SC；`waitData→sendCompAck` |
-| 7 | RSP `CompAck` | RN0→HN | RSP | `txnID=dH` | HN `waitRnCompAck→idle`；RN0 `returnResult` |
-
-如果 RN1 原本是 UC，`SnpShared` 会回 `SnpResp(SC)` 并把它降为 SC，其余流程相同。目录在 snoop 响应时更新，不在读请求获准时；在收到响应前 HN 不会执行另一笔冲突读，只会拒绝或反压。
-
-
-流程（UD holder，脏共享）：
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `ReadShared` | RN0→HN | REQ | `txnID=t`, `addr=A` | HN 发现 RN1 是其他 holder，`sendSnp` |
-| 2 | SNP `SnpShared` | HN→RN1 | SNP | `txnID=s`, `addr=A` | RN1 命中 UD |
-| 3 | DAT `SnpRespData` | RN1→HN | DAT | `txnID=s`, `resp=SC_PD`, `data=D` | RN1 UD→SC；HN 保存 D，`finishSnoop`：RN1 SC、RN0 SC；`snoopWrite=true` |
-| 4 | REQ `WriteNoSnpFull` | HN→SN | REQ | `txnID=h`, `addr=A` | 把 D 写回 SN |
-| 5 | RSP `DBIDResp` | SN→HN | RSP | `txnID=h`, `dbID=dS` | HN `waitSnDbId→sendSnData` |
-| 6 | DAT `NonCopyBackWrData` | HN→SN | DAT | `txnID=dS`, `resp=I`, `data=D` | SN `writeLine`，内存更新 |
-| 7 | RSP `Comp` | SN→HN | RSP | `txnID=h`, `dbID=dS` | HN `waitSnComp→sendRnData` |
-| 8 | DAT `CompData` | HN→RN0 | DAT | `txnID=t`, `resp=SC`, `data=D` | RN0 安装 SC；`sendCompAck` |
-| 9 | RSP `CompAck` | RN0→HN | RSP | `txnID=dH` | HN `idle`；RN0 `returnResult` |
-
-RN1 保留 SC 副本，所以最终两个 RN 都是 SC；为了让两个 SC 副本都满足“SN 是最新”的不变量，必须先把 D 写入 SN。目录在第 3 条更新，早于 SN 写完成；HN 仍是唯一活动事务。
-
-
-### 5.2 ReadUnique
-
-产品 RN 只在写 miss 或写命中 SC 时发 `ReadUnique`，所以请求方是 I 或 SC。
+#### ReadUnique
 
 | 请求方对该行 | 对方/目录状态 | HN 动作 | SN | 返回 | 请求方结果 |
 |---|---|---|---|---|---|
@@ -403,79 +556,7 @@ RN1 保留 SC 副本，所以最终两个 RN 都是 SC；为了让两个 SC 副�
 - 如果请求方是 SC 且另一个 RN 也是 SC，`SnpUnique` 使对方变 I，请求方升级；之后请求方本地安装 W 为 UD。
 - 请求方是 UC/UD 时不会发 `ReadUnique`，因为本地写已经命中；HN 也会断言请求方不能已经是 unique holder。
 
-流程（UD holder，脏数据直接转交）：
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `ReadUnique` | RN0→HN | REQ | `txnID=t`, `addr=A` | HN 发现 RN1 是其他 holder，`sendSnp` |
-| 2 | SNP `SnpUnique` | HN→RN1 | SNP | `txnID=s`, `addr=A` | RN1 命中 UD |
-| 3 | DAT `SnpRespData` | RN1→HN | DAT | `txnID=s`, `resp=I_PD`, `data=D` | RN1 UD→I；HN `finishSnoop`：RN1 invalid、RN0 UC、`completionResp=UD_PD`；`sendRnData` |
-| 4 | DAT `CompData` | HN→RN0 | DAT | `txnID=t`, `resp=UD_PD`, `data=D` | RN0 用 W 安装 UD（写路径），`sendCompAck` |
-| 5 | RSP `CompAck` | RN0→HN | RSP | `txnID=dH` | HN `idle`；RN0 `returnResult` |
-
-没有 SN 访问。第 2 条 SNP 直接走 HN→RN1（1→2，单跳）；第 3 条 DAT 走 RN1→HN（2→3→0→1），会经过 SN 的 Stop，但不会 eject 到 SN endpoint。
-
-
-### 5.3 Evict
-
-前提：RN0 的本地命令访问同一索引的不同 tag，victim 是干净的 SC/UC。
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `Evict` | RN0→HN | REQ | `txnID=t`, `addr=victim`, `allowRetry=1` | RN 已把 victim 置 I；`sendReq→waitComp`；HN 清 RN0 目录项 |
-| 2 | RSP `Comp` | HN→RN0 | RSP | `txnID=t`, `resp=I`, `dbID=0` | HN `sendRnRsp→idle`；RN `waitComp` 收到后 `resumeRequest` |
-| 3 | 原命令 REQ | RN0→HN | REQ | 原 `txnID=t`, 原 `addr` | 重新按原命令选择 `ReadShared`/`ReadUnique` |
-
-可达情况：
-
-| 情况 | HN 动作 | SN | RN |
-|---|---|---|---|
-| 发送方是 holder，无其他 holder | 清除该目录项 | 无 | 收到 `Comp` 后继续 |
-| 发送方是 holder，另一 RN 也持有 SC | 只清发送方，保留另一 holder | 无 | 收到 `Comp` 后继续 |
-| 发送方不是 holder / 重复 Evict | 不清任何项 | 无 | 收到 `Comp` 后继续 |
-
-关键点：
-
-- 没有 DAT、没有 SN 访问、没有 `CompAck`。
-- HN 在发出 `Comp` 后释放；RN 收到 `Comp` 后才发原命令，所以目录项已经清干净。
-- 原命令可能被 HN RetryAck；那是原命令自己的 retry，不是 Evict 的。
-- RN 在发 `Evict` 前已经把 victim 置 I。串行模型下 HN 不会在 Evict 处理期间发同地址 snoop；若端点测试直接注入 snoop，RN 会按 I 响应。
-- HN 不检查“这一行是否真的干净”；产品 RN 只会对 SC/UC 干净行发 `Evict`，脏行必须走 `WriteBackFull`。
-
-
-### 5.4 WriteBackFull
-
-前提：RN0 的 victim 是 UD，保存数据 D。
-
-| # | 消息 | 方向 | 通道 | 关键字段 | 状态/动作 |
-|---|---|---|---|---|---|
-| 1 | REQ `WriteBackFull` | RN0→HN | REQ | `txnID=t`, `addr=victim` | RN 已把 victim 置 I，保存 `victimData=D`、`victimDirty=true`；`sendReq→waitDbId` |
-| 2 | RSP `CompDBIDResp` | HN→RN0 | RSP | `txnID=t`, `dbID=dH` | HN 授权；`sendRnRsp→waitRnData`；RN `sendWriteData` |
-| 3 | DAT `CopyBackWrData` | RN0→HN | DAT | `txnID=dH`, `resp=UD_PD`, `data=D` | RN 注入后清 `victimDirty` 并 `resumeRequest`；HN 校验唯一 holder，清目录，`sendSnReq` |
-| 4 | REQ `WriteNoSnpFull` | HN→SN | REQ | `txnID=h`, `addr=victim` | SN `sendDbId` |
-| 5 | RSP `DBIDResp` | SN→HN | RSP | `txnID=h`, `dbID=dS` | HN `sendSnData` |
-| 6 | DAT `NonCopyBackWrData` | HN→SN | DAT | `txnID=dS`, `data=D` | SN `writeLine`，内存更新 |
-| 7 | RSP `Comp` | SN→HN | RSP | `txnID=h`, `dbID=dS` | HN `idle` |
-
-可达情况：
-
-| 情况 | HN 动作 | SN | RN |
-|---|---|---|---|
-| 正常脏替换 | `CompDBIDResp` → 收 `UD_PD` 数据 → 清唯一 holder → 写 SN → 等 `Comp` | 写 D | DAT 注入后继续原命令 |
-| victim 被 snoop 取走 | 仍授权 → 收 `CopyBackWrData(I,0)` → 丢弃，不写 SN、不改目录 | 无 | DAT 注入后继续原命令 |
-
-关键点：
-
-- 目录在第 3 条收到 `UD_PD` 数据时才清除，不在第 1 条；所以等待 RN 数据期间 HN 不会执行另一笔冲突读，也不会 snoop 这个已授权的写回。
-- HN 校验的是“该 RN 是唯一 holder 且没有其他 holder”，不是检查目录里的 UD 位；目录根本不记 UD，UD 和 UC 都记作 UC。
-- RN 在第 3 条 DAT 注入后就可以继续原命令；HN 可能还在写 SN，原命令可能被 RetryAck。这是允许的，HN 串行化保证后续请求不会越过这笔写回。
-- HN 发给 SN 的是 `NonCopyBackWrData`，不是 RN 的 `CopyBackWrData`；`CopyBackWrData` 只在 RN→HN 方向使用。
-- 如果 snoop 在 RN 等待授权/信用期间取走 victim：RN 回 `SnpRespData(I_PD,D)` 并清 `victimDirty`；原 WriteBackFull 仍然完成授权，之后发 `CopyBackWrData(I,data=0)`；HN 消耗后丢弃，不访问 SN、不改目录。取消的写回仍有 DAT flit。
-
-
-### 5.5 snoop 响应能力
-
-snoop 不是本地事务，但它是一致模式的核心能力；RN 在本地命令等待数据、等待 DBID、等待重试、甚至本地结果被反压时都能响应。
+#### snoop 响应
 
 | 被 snoop 方原状态 | `SnpShared` 响应 / 新状态 | `SnpUnique` 响应 / 新状态 |
 |---|---|---|
@@ -484,8 +565,6 @@ snoop 不是本地事务，但它是一致模式的核心能力；RN 在本地�
 | UC | `SnpResp(SC)` / SC | `SnpResp(I)` / I |
 | UD | `SnpRespData(SC_PD,D)` / SC | `SnpRespData(I_PD,D)` / I |
 | 脏 victim | `SnpRespData(I_PD,D)` / I | `SnpRespData(I_PD,D)` / I |
-
-另外有两种“没有驻留副本”的情况都回 `SnpResp(I)`：干净 victim（Evict 等待处理或目录暂时保守）和已经被前一次 snoop 取走数据的脏 victim。
 
 victim 命中条件：
 
@@ -515,6 +594,41 @@ HN 收到 snoop 响应后的数据来源：
 
 这解释了为什么脏共享返回 SC，而脏独占返回 UD_PD，以及 victim 被取走后请求方拿到 UC。
 
+## 5. 完整时序实例：写 miss + 脏替换 + 跨核 snoop
+
+场景：RN0 写 miss，同索引有脏 victim；目标行由 RN1 以 UD 持有。
+
+| 步骤 | 消息 | 通道 | 路径（经过的 stop） | 跳数 |
+|---:|---|---|---|---:|
+| 1 | `WriteBackFull` | REQ | RN0 → HN | 1 |
+| 2 | `CompDBIDResp` | RSP | HN → RN1 → SN → RN0 | 3 |
+| 3 | `CopyBackWrData`（脏数据） | DAT | RN0 → HN | 1 |
+| 4 | `ReadUnique`（原命令，`allowRetry=1`） | REQ | RN0 → HN | 1 |
+| 5 | `RetryAck` | RSP | HN → RN1 → SN → RN0 | 3 |
+| 6 | `WriteNoSnpFull`（HN 写回 victim） | REQ | HN → RN1 → SN | 2 |
+| 7 | `DBIDResp` | RSP | SN → RN0 → HN | 2 |
+| 8 | `NonCopyBackWrData` | DAT | HN → RN1 → SN | 2 |
+| 9 | `Comp`（victim 写回完成） | RSP | SN → RN0 → HN | 2 |
+| 10 | `PCrdGrant` | RSP | HN → RN1 → SN → RN0 | 3 |
+| 11 | `ReadUnique`（`allowRetry=0`） | REQ | RN0 → HN | 1 |
+| 12 | `SnpUnique` | SNP | HN → RN1 | 1 |
+| 13 | `SnpRespData(I_PD)` + 脏数据 | DAT | RN1 → SN → RN0 → HN | 3 |
+| 14 | `CompData(UD_PD)` + 数据 | DAT | HN → RN1 → SN → RN0 | 3 |
+| 15 | `CompAck` | RSP | RN0 → HN | 1 |
+
+这里展示的是原命令恰好落在 HN 忙碌期间的竞争路径。如果 `ReadUnique` 在 HN 完成写回并回到 `idle` 之后才到达，就不会出现步骤 5 和 10，HN 直接接纳原命令。
+
+关键因果：
+
+1. RN0 先处理 victim，发 `WriteBackFull`；此时原命令还没发出。
+2. HN 回 `CompDBIDResp`，RN0 发 `CopyBackWrData`。**DAT 注入后 RN0 立即恢复原命令**。
+3. 原命令 `ReadUnique` 到达时 HN 仍在处理写回，HN 把它放进等待表并回 `RetryAck`。
+4. HN 完成写回（步骤 6–9）后空闲，把等待项搬进上下文，发 `PCrdGrant`。
+5. RN0 重发 `ReadUnique`，HN 查目录发现 RN1 持有，发 `SnpUnique`；RN1 回脏数据 `I_PD`。
+6. HN 不写 SN，直接把数据作为 `CompData(UD_PD)` 转交 RN0；RN0 安装本地写数据为 UD，回 `CompAck`。
+
+15 条消息中 REQ 4、RSP 6、SNP 1、DAT 4，分别走四条独立环。步骤 5 的 `RetryAck` 与步骤 6 的 `WriteNoSnpFull` 可以同时在途。
+
 ## 6. HN：准入、目录和重试
 
 ### 6.1 一个活动上下文
@@ -528,7 +642,7 @@ HN 只有一个活动事务：
 
 活动上下文保存：上游完整 REQ、下游 txnID、HN/SN DBID、收到的整行数据、snoop 目标/槽位、`completionResp`、`snoopWrite`，以及 HN 作为请求方等待 SN 的 retry 标记。见 [HnNode.scala](../src/main/scala/chi/HnNode.scala#L35)。
 
-### 6.2 准入和重试
+### 6.2 准入和 retry
 
 HN 的 `reqRx.ready` 不是简单地等于“空闲”：
 
@@ -549,13 +663,7 @@ HN 的 `reqRx.ready` 不是简单地等于“空闲”：
 
 ### 6.3 目录
 
-HN 目录每行两个 holder 槽，每个槽记录 `valid/id/state`，state 只有 `I/SC/UC`：
-
-- 最多一个 RN 持有 UC；如果某行是 UC，另一个 RN 必须是 I。
-- 两个 RN 都是 SC 时，SN 必须是最新数据（在事务完成边界）。
-- 目录不记录 UD：RN 从 UC 静默变 UD 时，HN 仍按 UC 记录。因此 HN 的“UC”表示“独占权限”，不表示干净。
-- 目录覆盖 SN 的全部内存；没有目录替换，一致请求的地址超出目录范围会断言。
-- 目录是保守记录：`Evict` 或 `WriteBackFull` 已发出但尚未处理时，HN 可能仍保留旧 holder；如果此时发生 snoop，可能得到 `I`（干净 victim）或 `I_PD`（脏 victim）。在事务静止且请求处理完的边界检查目录与 RN 持有关系，不能逐周期要求精确。
+目录结构和记录规则见 1.5。需要强调的是目录是**保守记录**：`Evict` 或 `WriteBackFull` 已发出但尚未处理时，HN 可能仍保留旧 holder；如果此时发生 snoop，可能得到 `I`（干净 victim）或 `I_PD`（脏 victim）。在事务静止且请求处理完的边界检查目录与 RN 持有关系，不能逐周期要求精确。
 
 目录更新时点：
 
@@ -566,19 +674,16 @@ HN 目录每行两个 holder 槽，每个槽记录 `valid/id/state`，state 只�
 | `Evict` | 清除发送方的目录项 |
 | `WriteBackFull` 收到 `UD_PD` 数据 | 校验发送方是唯一 holder 且无其他 holder，然后清除发送方目录项，准备写 SN |
 | `WriteBackFull` 收到 `I` 数据 | 取消写回，不改目录，丢弃数据 |
-| 非一致 `ReadNoSnp`/`WriteNoSnpFull` | 不改目录；要求目标行在目录中未被持有 |
 | snoop 响应 | `finishSnoop`：被 snoop 方 invalid→I 否则 SC；请求方 invalid→UC 否则 SC |
 
 注意：`WriteBackFull` 的 `UD_PD` 数据路径校验“唯一 holder”；`I` 取消路径不校验 holder，产品中它只由 snoop 取走 victim 触发，目录已由该 snoop 更新。
 
 ### 6.4 下游 opcode 转换
 
-HN 把上游请求转换成 SN 能处理的 `ReadNoSnp`/`WriteNoSnpFull`：
+HN 把上游一致请求转换成 SN 能处理的 `ReadNoSnp`/`WriteNoSnpFull`：
 
 | 上游 REQ | HN 动作 | 下游 REQ |
 |---|---|---|
-| `ReadNoSnp` | 直接转发 | `ReadNoSnp` |
-| `WriteNoSnpFull` | 先授权 RN 数据，收齐后转发 | `WriteNoSnpFull` |
 | `ReadShared` | 查目录/snoop；干净则从 SN 读，脏则先写 SN | 需要读时 `ReadNoSnp`，脏共享写 SN 时 `WriteNoSnpFull` |
 | `ReadUnique` | 查目录/snoop；脏数据直接转给 RN | 需要读时 `ReadNoSnp`，脏数据直接转交时无下游 REQ |
 | `Evict` | 清目录，回 `Comp` | 无 |
@@ -620,8 +725,6 @@ HN 作为请求方时走同一套协议，但下游 ID 是 `h=0`：
 - HN 的“上游 retry 标记”和“下游 SN retry 标记”是两组独立寄存器；上游重发成功会把下游 `retried` 清掉，因为上游信用不算作下游 SN 请求的重试。
 - P-Credit 和 Ring credit 独立：拿到 P-Credit 后仍要等 REQ 环的 `inject.ready`；重发被反压时保持原 flit 和信用不变，直到真正注入。
 
-
-
 ### 6.6 HN 状态机
 
 | 状态 | 用途 | 离开事件 | 下一状态 |
@@ -629,7 +732,7 @@ HN 作为请求方时走同一套协议，但下游 ID 是 `h=0`：
 | `idle` | 无活动事务 | 接受 REQ | 读 → `sendSnReq`/`sendSnp`；写/Evict → `sendRnRsp` |
 | `sendSnReq` | 向 SN 发下游 REQ | `reqTx.fire` | 读 → `waitSnData`；写 → `waitSnDbId` |
 | `waitSnData` | 等 SN 读数据 | 匹配 `datRx.fire` | `sendRnData` |
-| `sendRnData` | 向 RN 发 `CompData` | `datTx.fire` | 一致读 → `waitRnCompAck`；非一致/ReadNoSnp → `idle` |
+| `sendRnData` | 向 RN 发 `CompData` | `datTx.fire` | 一致读 → `waitRnCompAck` |
 | `sendRnRsp` | 向 RN 发 `CompDBIDResp` 或 Evict `Comp` | `rspTx.fire` | 写 → `waitRnData`；Evict → `idle` |
 | `waitRnData` | 等 RN 写 DAT | 匹配 `datRx.fire` | 有效写回/写 → `sendSnReq`；取消写回 → `idle` |
 | `waitSnDbId` | 等 SN `DBIDResp` | 匹配 `rspRx.fire` | `sendSnData` |
@@ -646,7 +749,7 @@ HN 作为请求方时走同一套协议，但下游 ID 是 `h=0`：
 ### 6.7 队头阻塞和进展
 
 - HN 的 `reqRx.ready` 不能简单绑定到 `idle`。如果只在空闲时接收 REQ，REQ 环队头可能是一个会被拒绝的请求，挡住后面的已授权重发。当前实现忙时也消费可重试请求并回 `RetryAck`。
-- 注意：HN 的本地注入不经过 HN 自己的 FIFO，`RingStop` 只把环输入入队。因此 HN 不接收 REQ 不会直接挡住 HN 自己发往 SN 的 `reqTx`；被挡住的是环上后续的 flit，包括已授权重发。若队头不是本地目的且下游没有 credit，本地注入也会被转发优先级和 `>=2` credit 规则挡住，但那是 credit 饥饿，不是 `reqRx.ready` 造成的。
+- HN 的本地注入不经过 HN 自己的 FIFO，`RingStop` 只把环输入入队。因此 HN 不接收 REQ 不会直接挡住 HN 自己发往 SN 的 `reqTx`；被挡住的是环上后续的 flit，包括已授权重发。若队头不是本地目的且下游没有 credit，本地注入也会被转发优先级和 `>=2` credit 规则挡住，但那是 credit 饥饿，不是 `reqRx.ready` 造成的。
 - HN 在授权时把请求移入活动上下文并释放等待槽；`waitRetryReq` 还能接收另一个 RN 的首次请求并拒绝它，避免它挡在已授权重发前面。
 - RN 的 snoop 响应路径独立于主事务；本地结果反压也不会阻止已经注入的 `CompAck` 或 snoop 响应继续前进。
 - 四条环独立，REQ 被挡住时 RSP/DAT/SNP 仍可前进；这是系统能完成的重要原因。
@@ -708,22 +811,20 @@ SN 有一个等待记录：
 | 操作 | RN 本地结果 | HN 释放活动上下文 | SN 完成 | 关键保证 |
 |---|---|---|---|---|
 | 本地 cache 命中 | 读：本地读出；写 UC/UD：本地更新 | 不涉及 HN | 不涉及 | 没有任何 Ring flit |
-| 非一致读 | 收到 `CompData(I)` 后 | 向 RN 注入 `CompData` 后 | 注入 `CompData` 后 | HN 可能早于 RN 收到；DAT 环保证顺序 |
-| 非一致写 | 向网络注入写 DAT 后 | 收到 SN 写完成 `Comp` 后 | `writeLine` 后发 `Comp` | RN 提前完成，HN 等 `Comp` 确认 SN 内存已更新 |
 | 一致读/写 | 安装数据、注入 `CompAck` 后 | 收到 RN `CompAck` 后 | 读：SN 注入 `CompData` 后；写：`writeLine` 后发 `Comp` | 目录和 cache 在 HN 释放时已一致 |
 | Evict 替换 | 收到 `Comp` 后继续原命令 | 注入 `Comp` 后 | 不涉及 | 目录项已清除 |
 | WriteBackFull 替换 | 注入 victim DAT 后继续原命令 | 收到 SN `Comp`，或消耗取消 DAT 后 | 非取消：`writeLine` 后 `Comp` | 取消写回仍有 DAT flit，但不写 SN |
 | snoop 响应 | 无本地结果；RSP/DAT 注入后 | 不释放；继续后续路径 | 不涉及 | snoop 路径独立于本地事务 |
 
-“RN 完成”“HN 释放”“SN 内存已更新”是三个不同事件，不能混为一谈。非一致写是最典型的例子：RN 在 DAT 注入后就已经可以返回 CPU，但 HN 还要等 SN 的 `Comp` 才释放。
+“RN 完成”“HN 释放”“SN 内存已更新”是三个不同事件，不能混为一谈。脏写回是最典型的例子：RN 在注入 victim DAT 后就可以继续原命令，但 HN 还要等 SN 的 `Comp` 才释放。
 
 ### 8.2 提前完成和顺序
 
-- 非一致写：RN 在写 DAT 注入后即可返回本地结果；HN 仍等到 SN 的 `Comp` 才释放。若 CPU 立刻发同地址读，HN 仍忙，会拒绝/排队；只有当前写完成后才会服务读，因此读不会看到旧值。
-- 非一致读：RN 收到 `CompData` 即完成；HN 在注入 `CompData` 后就释放，不等待 RN 收数。DAT 环从 HN 出发的 FIFO 顺序保证后续消息不会超过它。
 - 一致读/写：RN 先安装数据（写路径安装 W），再发 `CompAck`；HN 收到 `CompAck` 才释放。因此 HN 的目录和 RN 的 cache 在释放时已经一致。
 - 脏替换：RN 在 victim DAT 注入后就可以发原命令，HN 仍可能在写 SN；干净替换则要等 `Comp` 到达后才发原命令。原命令可能被 RetryAck，HN 的串行化保证它不会越过 victim 写回。
+- 脏写回被 snoop 取消时，RN 仍会发出一条带 `I` 的 `CopyBackWrData`；HN 消耗后直接释放，不访问 SN。
 - 结果反压：RN 在 `returnResult` 保持结果快照，直到 `response.fire`；期间不接受新的本地命令，但 snoop 仍可处理。
+- HN 在向 RN 注入 `CompData` 后进入 `waitRnCompAck`，本地结果是否被消费不影响 HN 的释放条件。
 
 ### 8.3 一致性不变量
 
@@ -750,7 +851,6 @@ SN 有一个等待记录：
 | HN REQ 目标/对齐/`allowRetry`/类型 | HN `reqRx` | 非法请求 |
 | HN 请求方不能已经是 unique holder | HN `reqRx` | 重复获取独占 |
 | HN 目录地址范围、holder 数量、唯一 holder | HN 目录 | 目录越界或三 holder |
-| 非一致访问要求目录未持有 | HN `reqRx` | 绕过 cache 直接读写 |
 | 脏写回必须来自唯一 holder | HN `waitRnData` | 覆盖别人的数据 |
 | SN 地址范围、对齐、opcode、写 DAT 匹配 | `SnNode` | 越界/错配 |
 | Ring credit 不越界 | `RingStop` | credit 计数错误 |
@@ -759,7 +859,49 @@ SN 有一个等待记录：
 
 复位是全系统复位：清空所有端点的活动上下文、retry 标记、等待表、预留、待发响应、cache、目录、Ring FIFO，并恢复所有 link credit；SN 内存恢复 `initialLines`。复位不保留脏数据，也不支持某个端点单独复位后继续使用旧网络消息。
 
-## 9. 没有实现的能力
+## 9. 微架构取舍：硬件式部分与刻意的串行化
+
+这个实现首先是协议子集的功能模型，而不是性能导向的微架构。传输层是常规 RTL，端点层则有多处刻意串行化、偏“软件式建模”的结构。把它们分开看，有助于判断哪些是范围选择，哪些是以后要改的。
+
+### 9.1 传输层是常规硬件写法
+
+- `RingStop` 用 FIFO + 转发优先仲裁 + credit/bubble：转发需要 1 个下游空位，注入需要 2 个（`RingStop.scala:19-49`）。队头阻塞被保留，不做旁路。
+- 四条通道各有一条独立单向环，用物理资源换通道级并发；REQ 阻塞不会拖住 RSP/SNP/DAT。
+- 所有边界都是显式 `Decoupled` 握手，没有隐藏的阻塞调用。
+- RN 有独立的 snoop 响应路径，本地事务等待或结果背压时仍能回 snoop（`RnNode.scala:284-355`）。
+- 路由是静态的：`ChiNoC` 把 `tgtID` 译成物理 `dst`（`ChiNoC.scala:27-33`），所有缓冲有界，没有动态分配。
+
+这些部分的设计方式与真实硬件一致。
+
+### 9.2 端点层的软件式痕迹
+
+1. **单线程事务模型**：每个端点只有一个活动上下文，其余请求被 `RetryAck` 进等待表，空闲后再授权。这等价于“单线程服务器 + 等待队列”，而不是多 outstanding 事务。HN 的 14 个状态中大量是 `wait*` 阻塞阶段（`HnNode.scala:35-37`）。
+2. **store-and-forward**：HN 把 SN 返回的整行 512 bit 存进 `data` 寄存器，再重新发一条 `CompData` 给 RN（`HnNode.scala:381`、`436-456`），而不是直通转发。脏 snoop 数据同样先落入 HN。没有 DMT。
+3. **写路径串行化**：对脏写回，HN 先回 `CompDBIDResp`，等 RN 的 `CopyBackWrData` 到达后才向 SN 发 `WriteNoSnpFull`（`HnNode.scala:318-382`、`261-287`）。这不仅是风格问题：数据到达前 victim 仍可能被 snoop 抢走，HN 必须能选择不写内存（见 4.7）。若要提前发下游请求，需要额外的写回中止机制。
+4. **重试表是软件等待队列**：把整条 `ReqFlit` 当作“请求对象”保存，在槽位间搬运，授权时再整体搬进事务上下文（`HnNode.scala:63-88`、`246-254`、`468-477`）。重复检测和选槽在默认 2 槽时是小规模并行比较/优先级逻辑，结构本身没问题；软件式的地方是“保存对象、调度、再执行”的模型。槽位增多时，这种整对象保存会明显变得不划算。
+5. **用寄存器数组模拟存储器**：SN 的 memory 是 `RegInit(VecInit(initialLines))`，读为组合逻辑一拍出数（`SnNode.scala:29-31`、`84-87`）；没有 SRAM 宏、读延迟或初始化流程。cache 的有效位/状态位和目录条目用 `RegInit` 数组复位初始化，cache 数据和标签则不复位。
+6. **长组合链与隐式优先级**：`reqRx.ready` 同时依赖状态、等待槽、待发 `RetryAck` 和 `reservedRetry`（`HnNode.scala:181-184`）；重试选择和空闲槽分配用 Scala `for` 生成优先级逻辑，目录更新则对两个槽位做展开比较；`ChiNoC.route` 是线性 `MuxCase`。4 个节点、2 个槽位时综合没有问题，但代码里没有 pipeline register 或时序边界的意识。
+
+### 9.3 为什么在当前范围内可以接受
+
+项目的范围是功能正确性和事务完成语义，不是延迟、面积或频率。上述选择让不变量容易陈述和验证：单一活动上下文使目录和所有权状态没有并发交叉；store-and-forward 让数据归属和完成顺序显式化；阻塞式 FSM 与断言、参考模型直接对应；复位初始化数组让测试结果确定。
+
+代价同样明确：多段往返被串行化，HN 和 SN 各自持有 512 bit 数据寄存器，事务之间没有重叠。
+
+### 9.4 如果转向性能导向
+
+按收益/改动量排序：
+
+1. **重叠写回路径**：为脏写回引入显式的取消/中止机制后，让 HN 在等 RN 数据时提前向 SN 申请授权；否则保留当前“等数据到达”的顺序。
+2. **拆分 HN 状态机**：按通道拆成 REQ/RSP/DAT/SNP 控制器加事务 scoreboard，允许阶段重叠并缩短组合路径。
+3. **多事务上下文**：每个 RN 允许多个 outstanding，按 `txnID` 索引，替代“一笔 + 等待表”。
+4. **数据直通**：读数据和 snoop 脏数据经 HN 转发，不再整行缓存；进一步可做 DMT。
+5. **存储器宏化**：SN 用 SRAM 模型和读延迟，cache/目录只复位 valid 位。
+6. **重试表瘦身**：只存身份字段；槽位增多时改用 CAM/并行比较。
+
+这些是范围变化，不是缺陷修复。在当前“每端点一笔 + 功能正确性优先”的约束下，9.2 的写法是自洽的。
+
+## 10. 没有实现的能力
 
 按类别列出，避免把端点测试能力误当成系统能力：
 
@@ -773,13 +915,12 @@ SN 有一个等待记录：
 - **并发规模**：每个 RN 只有一笔 outstanding；HN 只有一笔活动事务；SN 只有一笔活动内存操作；没有多个 HN、多个 SN、超过 2 个 RN。`ChiSystem` 固定 4 个端点；通用 `Ring` 支持其他 node 数，但不是 CHI 系统。
 - **结构与策略**：目录不替换且必须覆盖 SN 内存；cache 是直接映射，没有组相联或替换策略；cache/目录大小必须是大于 1 的 2 的幂。
 - **信用和完成**：没有 `PCrdReturn`、没有主动撤销、没有多个 P-Credit 类型；没有乱序完成、没有持久化。
-- **端点组合**：一致 RN 不使用 `ReadNoSnp`/`WriteNoSnpFull`；HN 端点虽然接受，但要求目标行未被 cache 持有，且不会分配目录。一致 RN 也不能消费 `CompData(I)`。
+- **端点组合**：RN 不发 `ReadNoSnp`/`WriteNoSnpFull`；HN 端点虽然接受，但要求目标行未被 cache 持有，且不会分配目录。一致 RN 也不能消费 `CompData(I)`。
 
-## 10. 验证入口和源码地图
+## 11. 验证入口和源码地图
 
 | 能力 | 测试入口 |
 |---|---|
-| 非一致读/写、ID/反压/复位 | [ChiSystemSpec.scala](../src/test/scala/chi/ChiSystemSpec.scala)、[ChiSystemRandomSpec.scala](../src/test/scala/chi/ChiSystemRandomSpec.scala) |
 | 一致系统、cache 命中、共享/独占、替换 | [ChiCoherentSystemSpec.scala](../src/test/scala/chi/ChiCoherentSystemSpec.scala)、[ChiCoherentRandomSpec.scala](../src/test/scala/chi/ChiCoherentRandomSpec.scala) |
 | 共享读和脏共享 | [ChiSharedReadSpec.scala](../src/test/scala/chi/ChiSharedReadSpec.scala) |
 | 独占获取和脏数据转交 | [ChiUniqueReadSpec.scala](../src/test/scala/chi/ChiUniqueReadSpec.scala) |

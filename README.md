@@ -2,9 +2,9 @@
 
 Ring interconnect implemented in Chisel and Scala. Built with Mill.
 
-See [Design](docs/design.md) for architecture and transaction behavior. For a
-transaction-by-transaction walkthrough of the CHI subset and its ring transport,
-see [Transactions explained](docs/transactions-explained.md).
+See [Design](docs/design.md) for architecture. See [Transactions](docs/transactions.md)
+for the coherent-mode transaction walkthrough, capability tables, endpoint state
+machines, and ring transport details.
 
 Supports four independent unidirectional rings with configurable node count,
 buffer depth, and payload types. Nodes can inject messages, route them by destination,
